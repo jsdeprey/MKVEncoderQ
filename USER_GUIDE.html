@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>MKV Encoder Q User Guide</title>
+  <style>
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="USER_GUIDE.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">MKV Encoder Q User Guide</h1>
+</header>
+<h1 id="mkv-encoder-q-user-guide">MKV Encoder Q User Guide</h1>
+<p>MKV Encoder Q combines three independent tools in one Windows
+application:</p>
+<ul>
+<li><strong>Encoder</strong> — inspects videos, estimates possible
+savings, and converts approved files to H.265/HEVC.</li>
+<li><strong>Cleaner</strong> — uses MKVToolNix to clean selected
+metadata from MKV files.</li>
+<li><strong>Rename</strong> — previews and applies safe single-file or
+batch filename changes.</li>
+</ul>
+<p>Each tab has its own input folder, settings, queue, and controls. The
+Encoder and Cleaner may work at the same time. Files sent from Encoder
+to Cleaner wait when their encoded output is not ready yet.</p>
+<h2 id="required-programs">Required programs</h2>
+<p>The application expects these external command-line programs:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Feature</th>
+<th>Required program</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Inspect media</td>
+<td><code>ffprobe.exe</code></td>
+</tr>
+<tr class="even">
+<td>Sample and encode video</td>
+<td><code>HandBrakeCLI.exe</code></td>
+</tr>
+<tr class="odd">
+<td>Clean MKV files</td>
+<td><code>mkvmerge.exe</code> and <code>mkvpropedit.exe</code> from
+MKVToolNix</td>
+</tr>
+</tbody>
+</table>
+<p><code>HandBrakeCLI.exe</code> and <code>ffprobe.exe</code> may be
+copied beside <code>MKVEncoderQ.exe</code> or configured in Encoder
+Settings. The Cleaner can find a normal MKVToolNix installation or use a
+configured folder. A missing MKVToolNix installation disables Cleaner
+features without disabling Encoder or Rename.</p>
+<h2 id="encoder-workflow">Encoder workflow</h2>
+<ol type="1">
+<li>Choose an input folder or use the configured default.</li>
+<li>Decide whether newly found files should be checked using <strong>New
+files selected</strong>.</li>
+<li>Optionally enable <strong>Inspect files when added</strong> to build
+a sortable media inventory first.</li>
+<li>Use the filters and sorting controls to find candidates.</li>
+<li>Click the <strong>Encode All</strong> heading to check or clear the
+eligible rows currently visible through the filters. Hidden rows are
+unselected.</li>
+<li>Check the individual files you want and press
+<strong>Start</strong>.</li>
+<li>After each completion, right-click it and select <strong>Play
+Video</strong>.</li>
+<li>When satisfied, right-click the completed row and select
+<strong>Delete Backup File</strong> if backups are enabled.</li>
+</ol>
+<p>If <strong>Start</strong> is pressed while a directory inventory is
+still running, the request is retained and begins only after inventory
+finishes. When <strong>Inspect files first</strong> is enabled, Start
+also waits for the complete inspection cycle and applies the selected
+media filters before claiming the first file. Turn inspection off when
+you intentionally want Start to proceed after inventory without waiting
+for new media probes; files lacking cached details cannot match an
+active media filter and remain excluded.</p>
+<p>The inspection gate covers the running probe worker, the file
+currently being probed, queued files, results waiting to be applied to
+the interface, and the final filter handoff. This prevents Start from
+seeing a brief false-idle state between those phases.</p>
+<p>The Codec, Resolution, Rating, and Sort controls lock as soon as
+<strong>Start</strong> is accepted, including while it is waiting for
+inventory or inspection. Choose the desired filters before pressing
+Start. Use <strong>Stop All</strong> to cancel a pending Start and
+unlock the controls.</p>
+<p>If a periodic Active Directory rescan is underway when Start is
+pressed, the background rescan is cancelled and Start uses the last
+completed inventory. Cancelling a partial rescan does not mark unvisited
+files as missing.</p>
+<p>After stopping a session, changing the input folder starts a separate
+inventory view. Rows hidden by the old folder’s filters, along with its
+saved row order and missing-file display state, are discarded before the
+new folder is loaded. You may press Start during the new folder’s
+inventory or inspection; the request will resume after that folder’s
+final filter pass completes.</p>
+<p>At the end of inspection, the status briefly reports <strong>applying
+filters</strong>. A pending Start resumes automatically only after that
+final filter pass finishes; <strong>Complete</strong> means the queue is
+ready to begin.</p>
+<p>Inspection results remain part of the active inspection cycle until
+the interface has consumed them and updated the corresponding rows. If
+files are discovered during that handoff, they join the same cycle
+rather than starting a competing inspection worker. Background directory
+scanning pauses through this complete inspection-and-filter handoff so
+it cannot keep Start waiting.</p>
+<p>Immediately before the worker starts, the visible Encode checkboxes
+are copied into the processing queue and every hidden row is excluded.
+The Encoder log records how many visible files were accepted.
+<strong>Stop All</strong> may be used while Start is waiting for
+inventory or inspection; it cancels that pending request without
+starting later.</p>
+<h3 id="a-practical-20-file-nas-batch">A practical 20-file NAS
+batch</h3>
+<p>Set <strong>New files selected</strong> to OFF, or click
+<strong>Encode All</strong> until all eligible files are unchecked.
+Inspect and sort the folder, select approximately 20 candidates, and
+start the queue. Review completed outputs with <strong>Play
+Video</strong>, delete each approved backup, and then select the next
+group. Filters are locked during encoding so review rows do not move
+unexpectedly.</p>
+<p>Sampling, encoding, and progress updates preserve the file’s current
+visible position. A file remains where the selected sort mode or manual
+drag order put it instead of moving to the bottom when its status
+changes.</p>
+<p>For fresh installations, <strong>Inspect files when added</strong>
+starts ON. Existing installations retain their saved choice. Start, Stop
+All, Pause/Resume, and Cancel File share a colored marker that moves
+beneath the current action as soon as the click is accepted. In a
+filtered library, <strong>Encode All</strong> affects only matching
+visible rows and explicitly excludes hidden rows from processing.</p>
+<h2 id="directory-scanning-and-queue-selection">Directory scanning and
+queue selection</h2>
+<p><strong>Active Directory Scanning</strong> controls continued
+discovery, not encoding:</p>
+<ul>
+<li>OFF — the selected/default folder is scanned once and the populated
+list is retained without repeatedly walking the directory tree. Start
+processes that list.</li>
+<li>ON — the initial scan works the same way, then the folder continues
+to be checked for new, moved, or removed files.</li>
+</ul>
+<p>Large directory trees use two distinct stages. First, the program
+builds the complete recursive inventory. The status reports top-level
+folders immediately, then folders scanned, all filesystem files checked
+(including subtitles and sidecars), and supported videos found. Rows are
+displayed in small acknowledged batches so thousands of updates cannot
+overwhelm the interface. An exact percentage is not possible during this
+first stage because the recursive folder total is not known until
+traversal reaches the end.</p>
+<p>The separate <strong>Directory inventory</strong> progress bar uses
+the quickly available top-level folder count as an estimate. This is
+especially representative for a library organized as one movie folder
+per video. Nested artwork or season folders can make the estimate
+imperfect, so final folder, file, and supported video totals replace it
+when traversal finishes. The Active Directory Scanning line reports only
+whether repeated scans are enabled.</p>
+<p>Inventory uses an amber progress bar and has its own <strong>Cancel
+Inventory</strong> button. Media inspection remains visibly waiting,
+with its Cancel button disabled, until inventory is complete. Cancelling
+inventory stops discovery without deleting or modifying any video.</p>
+<p>After inventory is complete, optional media inspection begins with a
+fixed video total. Its progress therefore remains a determinate
+<strong>X of Y</strong>, and the final counts stay visible. Inventory
+and media inspection never run at the same time. Continued scans respect
+the configured rescan interval; while a repeat inventory runs, the last
+complete total remains visible until the replacement inventory is
+ready.</p>
+<p>Repeated scanning automatically becomes gentler as the library grows.
+Small folders retain the configured interval. Inventories with at least
+250 items wait at least one minute, 1,000 items wait at least five
+minutes, and 3,000 items wait at least fifteen minutes between scans. A
+scan that takes unusually long also extends the next delay. Large repeat
+scans yield between directories and are throttled further while encoding
+so background discovery does not compete with HandBrake, the interface,
+or a NAS. Automatic rescans never overlap initial inventory or media
+inspection. An unchanged rescan updates only the small Active Directory
+Scanning status and leaves the completed inventory and inspection
+summaries steady.</p>
+<p>The Active Directory Scanning line identifies <strong>Normal
+mode</strong> or <strong>Large-library mode</strong>, shows the
+approximate time until the next scan and the last completed scan, and
+notes when background scanning is throttled during an encode. The
+countdown updates at a restrained rate to avoid distracting UI flicker.
+When Active Directory Scanning is enabled, <strong>Scan Now</strong>
+requests one immediate scan without changing the adaptive interval used
+afterward. It is temporarily unavailable while a directory scan is
+already in progress, preventing overlapping scans.</p>
+<p><strong>New files selected</strong> controls the default Encode
+checkbox for newly discovered or dropped files. When media filters are
+active, a new file remains excluded until inspection confirms that it
+matches those filters. Matching files are then selected automatically;
+nonmatching files remain excluded.</p>
+<p>The <strong>Encode All</strong> heading changes eligible rows visible
+through the current media filters and unchecks hidden rows.
+<strong>Start</strong> repeats that safety check so an invisible row
+cannot encode because it was selected before the filter was applied.
+<strong>Force All</strong> continues to control force-analysis
+decisions, but a hidden unselected file is not encoded.</p>
+<p>Above the list, <strong>Files: total / filtered / selected</strong>
+shows the complete queue, the number currently visible under the media
+filters, and the number of visible files currently checked for
+encoding.</p>
+<p>Dragging the handle at the left of eligible rows changes queue order.
+Completed and active rows are protected. Filtering and sorting are
+disabled during an active encoding session to keep the displayed order
+stable.</p>
+<h2 id="media-inspection">Media inspection</h2>
+<p><strong>Inspect files when added</strong> launches one background
+<code>ffprobe</code> worker. It reads existing container metadata; it
+does not decode, sample, or encode the video. One worker is used to
+avoid overwhelming a NAS.</p>
+<p>The inspection display shows the current file, completed count,
+failures, progress, and estimated remaining time. It can be cancelled
+independently of encoding. Results are cached using full path, file
+size, and modification time. A changed file is inspected again
+automatically.</p>
+<p>The inspection summary always retains the discovered, inspected,
+succeeded, and failed totals. If inspection temporarily catches up while
+directory discovery is still running, it says so instead of incorrectly
+reporting that the full inspection is complete. Final totals remain
+visible after completion.</p>
+<p>Inspection supplies the Media and Rating columns and enables filters
+for codec, resolution, and rating. The list can be sorted by size,
+rating, or filename. If automatic inspection is off, Media and Rating
+are filled naturally when each file reaches normal Encoder analysis.</p>
+<h3 id="h.264-wasteful-rating">H.264 WASTEFUL rating</h3>
+<p>For H.264 only, the program divides video bitrate by frame
+pixels:</p>
+<p><code>bitrate density = video bitrate / (width × height)</code></p>
+<p>The file is marked <strong>WASTEFUL</strong> above these
+thresholds:</p>
+<table>
+<thead>
+<tr class="header">
+<th>Resolution category</th>
+<th style="text-align: right;">Threshold</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>720p, width at least 1280</td>
+<td style="text-align: right;">0.15 bits/second per pixel</td>
+</tr>
+<tr class="even">
+<td>1080p, width at least 1920</td>
+<td style="text-align: right;">0.20 bits/second per pixel</td>
+</tr>
+<tr class="odd">
+<td>4K, width at least 3840</td>
+<td style="text-align: right;">0.25 bits/second per pixel</td>
+</tr>
+</tbody>
+</table>
+<p>This is a candidate flag, not proof that the video should be encoded.
+Grain, noise, motion, rain, smoke, water, and other complex content can
+legitimately require more bitrate. Normal sampling still makes the
+encode/skip decision.</p>
+<h3 id="h.265-review-size-rating">H.265 REVIEW SIZE rating</h3>
+<p>H.265/HEVC files are not called Wasteful. Instead, an unusually large
+file is marked <strong>REVIEW SIZE</strong> using file size, duration,
+and resolution:</p>
+<table>
+<thead>
+<tr class="header">
+<th>Resolution category</th>
+<th style="text-align: right;">Two-hour review threshold</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>SD</td>
+<td style="text-align: right;">1.5 GiB</td>
+</tr>
+<tr class="even">
+<td>720p</td>
+<td style="text-align: right;">3 GiB</td>
+</tr>
+<tr class="odd">
+<td>1080p</td>
+<td style="text-align: right;">5 GiB</td>
+</tr>
+<tr class="even">
+<td>4K</td>
+<td style="text-align: right;">15 GiB</td>
+</tr>
+</tbody>
+</table>
+<p>The limit scales with duration. For example, the 1080p threshold is
+about 2.5 GiB for one hour, 5 GiB for two hours, and 7.5 GiB for three
+hours. <strong>REVIEW SIZE</strong> never checks or forces a file; it
+only helps locate files worth examining. Missing required metadata
+produces <strong>UNKNOWN</strong>.</p>
+<h2 id="sampling-and-projected-savings">Sampling and projected
+savings</h2>
+<p>Unless Force Encode is selected, the Encoder creates short test
+encodes before deciding whether a file is worthwhile.</p>
+<ul>
+<li>The default is three 10-second samples.</li>
+<li>Progressive mode begins at widely separated positions—the midpoint,
+then the quarter and three-quarter points by default.</li>
+<li>If the video is too short, sample length is reduced so the samples
+fit.</li>
+<li>With the default <strong>Progressively add one sample</strong>
+behavior, the first analysis uses the configured sample count (three by
+default). Each <strong>Reanalyze</strong> retains those results, tests
+one new part of the video, and recalculates the combined estimate, up to
+the configured maximum (six by default).</li>
+<li>The new timestamps form a stable, space-filling sequence: adding
+sample 4 does not move or rerun samples 1–3.</li>
+<li>Settings can select <strong>Use a new sample set</strong> to restore
+the earlier behavior where every reanalysis uses a completely new group
+of timestamps.</li>
+<li>Changing a sampling or encoding setting starts a fresh progressive
+sample set so unlike results are not mixed.</li>
+<li>Samples use the configured resolution quality, encoder preset, bit
+depth, crop, denoise, and audio rules.</li>
+<li>Subtitles are excluded from temporary samples because they are not
+needed for the size estimate. Full encodes handle configured stream
+preservation and are verified afterward.</li>
+</ul>
+<p>For each sample:</p>
+<p><code>projected full size = sample output size / sampled seconds × full duration</code></p>
+<p>The final projection uses the total bytes from all samples divided by
+the total sampled time. Projected savings compares that estimate with
+the original file size. If projected savings meets <strong>Minimum
+projected savings</strong>, the file is recommended for encoding;
+otherwise it is skipped.</p>
+<p>Samples can disagree substantially. A quiet scene may compress
+extremely well, while grain, action, smoke, water, darkness, or rapid
+camera movement may produce a much larger estimate. The individual
+sample lines help show whether the final average is representative.</p>
+<p>During final verification, ordinary subtitle tracks must all remain
+present. Embedded EIA-608/708 caption services are counted the way
+HandBrake exposes them: several services contained in one video stream
+may become one selectable closed-caption track. This avoids rejecting a
+valid output merely because ffprobe lists CC1–CC4 separately while
+HandBrake consolidates them.</p>
+<h3 id="reanalyze-and-force-encode">Reanalyze and Force Encode</h3>
+<p><strong>Reanalyze</strong> adds one sample with the default
+progressive mode. The Action column stays
+direct—<strong>Reanalyze</strong>, <strong>Queued</strong>, or
+<strong>Reanalyzing…</strong>—while the sampling log reports the
+previous, new, and maximum sample counts. Multiple reanalyses may be
+queued while another file is encoding. The row stays in place while its
+reanalysis keeps internal priority.</p>
+<p><strong>Force Encode</strong> skips the sample-based savings decision
+but still probes the file and applies safety checks. It should be used
+when you have already decided to encode regardless of projected savings.
+Dolby Vision Profile 5 remains protected because it cannot be safely
+converted by this workflow.</p>
+<p>The final <strong>File Details…</strong> item in the Encoder
+right-click menu opens a selectable summary of the row, including its
+full path, queue state, size and projections, inspection results, codec,
+resolution, bitrate, duration, rating, completed output, and any failure
+or inspection error. A completed output that fails verification is
+retained for inspection; File Details reports its exact path, existence,
+size, timestamp, and complete error while the table displays
+<strong>Failed — see File Details</strong>. A later successful retry
+removes that superseded retained output. Cancelling an encode
+immediately removes its incomplete temporary file. Use <strong>Copy
+All</strong> to place the complete summary on the clipboard.</p>
+<h2 id="important-encoder-settings">Important Encoder settings</h2>
+<ul>
+<li><strong>Minimum projected savings</strong> — required estimated
+reduction before normal encoding. Default: 10%.</li>
+<li><strong>Number of samples</strong> and <strong>Seconds per
+sample</strong> — more or longer samples can improve representation but
+take longer.</li>
+<li><strong>Quality RF by resolution</strong> — lower RF means higher
+quality and generally larger output.</li>
+<li><strong>Encoder preset</strong> — slower presets can improve
+compression efficiency but take longer.</li>
+<li><strong>Denoise</strong> — may improve compression on noisy sources,
+but strong filtering can remove real detail.</li>
+<li><strong>Audio streams to keep</strong> — All, First, Default, or
+First English.</li>
+<li><strong>Audio passthrough codecs</strong> — selected compatible
+formats are copied; unsupported formats fall back to AAC.</li>
+<li><strong>Backup originals</strong> — preserves the original using the
+configured backup suffix before the verified output replaces it.</li>
+<li><strong>Output folder</strong> — blank means the input file’s
+folder.</li>
+<li><strong>File stability wait</strong> — prevents partially copied
+files from being processed too early.</li>
+</ul>
+<h2 id="audio-behavior">Audio behavior</h2>
+<p>The default <strong>First English</strong> mode keeps the first
+stream tagged <code>eng</code>, <code>en</code>, or
+<code>english</code>. If no English tag exists, the first audio stream
+is kept and a warning is shown so the output is not left without
+audio.</p>
+<p>Auto passthrough permits AAC, AC3, E-AC3, TrueHD, DTS, and DTS-HD by
+default. Other formats are converted to AAC using the original channel
+count and configured bitrate rules.</p>
+<h2 id="backups-completion-and-verification">Backups, completion, and
+verification</h2>
+<p>The encoded file is verified before the original is replaced or
+backed up. Verification checks important properties such as duration and
+stream counts. A verification failure leaves the original protected and
+reports the reason.</p>
+<p>With backups enabled, <strong>Delete Backup File</strong> is
+available only on completed rows and always displays a confirmation
+warning. Deleting a backup is permanent. With backups disabled,
+completed outputs are tracked so Active Directory Scanning does not add
+the new output back into the queue.</p>
+<p>When the Rename tab changes the name of a completed video, its
+existing <code>.bak</code> backup is renamed in the same protected
+transaction. Undo restores both names. If the proposed backup name
+already exists, neither file is renamed.</p>
+<p>Completed Decision/Result text begins with the actual final output
+size. If the output is more than 1 MiB larger than the source, the row
+is highlighted in amber and reports both the size and percentage
+increase. This is a review warning; the verified encode remains
+successfully Completed.</p>
+<p>For a completed file whose backup is still present, right-click and
+choose <strong>Revert to Backup…</strong> to restore the original. The
+confirmation identifies the original and encoded paths. The encoded
+output is retained temporarily until the backup restoration succeeds, so
+a failed restore can roll back. A successful restore marks the row
+<strong>Reverted</strong>, changes Backup to <strong>Restored</strong>,
+and leaves Encode unchecked. This operation permanently removes the
+encoded output and cannot be undone by MKV Encoder Q.</p>
+<p>The Encoder table uses the <strong>Backup</strong> column instead of
+a redundant per-row Progress column; current encode progress remains in
+the large display below the table. <strong>[ Present ]</strong> means
+the backup exists. Click that cell to check it and open the deletion
+warning. After deletion through the application it changes to
+<strong>Deleted</strong>. Other states include
+<strong>Disabled</strong>, <strong>Not created</strong> for a skipped
+encode, <strong>Not found</strong> when a completed or failed encode was
+expected to have one, and <strong>—</strong> when no backup is expected
+yet.</p>
+<p>To make active work easy to locate without the old Progress column,
+the complete row is highlighted: blue while sampling, green while
+encoding, and amber while paused. The Action column also shows the
+matching active state.</p>
+<h2 id="cleaner-tab">Cleaner tab</h2>
+<p>The Cleaner works only on MKV files and uses MKVToolNix. Files can be
+added from its own folder, drag-and-drop, or the Encoder right-click
+menu. <strong>Send All Files in This Directory to Cleaner</strong> adds
+every eligible Encoder row from the clicked file’s exact directory after
+confirmation; filtered-out rows are included, missing rows are excluded,
+and subdirectories are not included. A file still waiting, sampling, or
+encoding appears in Cleaner as waiting for its encoded output. Completed
+files can be cleaned immediately, even while Encoder works on other
+files.</p>
+<p>The Cleaner page has separate <strong>Video</strong>,
+<strong>Audio</strong>, and <strong>Subtitles</strong> checkboxes under
+<strong>Remove track names</strong>. These remove only the optional
+display name attached to the selected track types. Language codes,
+codecs, and the actual video, audio, and subtitle streams are
+preserved.</p>
+<p>Choose <strong>Clean Again</strong> to inspect the selected file
+again using the one-run checkboxes currently shown on the Cleaner tab.
+This allows another cleanup pass after enabling an option such as
+<strong>Video</strong> track-name removal. <strong>Remove All</strong>
+clears every Cleaner row; if queued or waiting requests exist, the app
+asks before cancelling them. It never deletes video files.</p>
+<p><strong>Clean Selected</strong> cleans or re-cleans the highlighted
+available MKV files. <strong>Clean All</strong> confirms the count and
+cleans or re-cleans every currently available MKV in the Cleaner list.
+Both use the one-run options currently visible above the list. Files
+still waiting for an encode output remain queued and are not treated as
+failures.</p>
+<p><strong>Clear subtitle flags: Default</strong> and
+<strong>Forced</strong> are independent. Each option clears that flag
+from every subtitle track in the files cleaned during that run.
+Selecting both turns both flags off without removing subtitle tracks.
+The Cleaner reinspects the file for <strong>Clean Again</strong>, so a
+previously cleaned file is processed again if any requested flag is
+still enabled; it reports Already Clean only when the requested changes
+are already satisfied. These operations normally use
+<code>mkvpropedit</code> to modify the MKV header in place without
+remuxing or re-encoding.</p>
+<p>The Encoder’s <strong>Clean After Encode</strong> switch applies to
+every file that finishes successfully while the switch is enabled,
+including files already listed before it was turned on. Skipped, failed,
+and cancelled encodes are not sent. The Encoder log confirms each
+Cleaner handoff, automatic handoff does not change tabs, and the switch
+remembers its state in <code>config.json</code> (on by default in a new
+installation). Existing installations retain their saved choice.</p>
+<p><strong>Subtitles off unless audio is marked foreign</strong> clears
+the default-track flag from subtitle tracks when the primary audio is
+English or its language is untagged/unknown. With English audio, an
+explicitly foreign forced subtitle has both Default and Forced cleared,
+while an English forced subtitle is left alone as intentional. Only
+audio explicitly tagged as a foreign language retains its existing
+subtitle defaults. The checkbox applies to the current run; its starting
+value is controlled in Cleaner Settings. This is normally an in-place
+MKV header edit and does not remux or re-encode the file.</p>
+<p>Main-page changes apply to one cleaning run only and then return to
+the defaults configured under Cleaner Settings.</p>
+<p>Use the Cleaner preview/status information before applying
+operations. Encoder and Cleaner have separate default folders and
+separate Settings buttons.</p>
+<h2 id="rename-tab">Rename tab</h2>
+<p>Files can be added individually, as a folder, through drag-and-drop,
+or from Encoder/Cleaner right-click menus. Busy files are excluded with
+a warning rather than renamed underneath an active process.</p>
+<p>Right-click a Rename row to open its containing folder, copy its
+filename, or copy only the containing directory’s name. These commands
+use the row that was right-clicked and do not modify the file.</p>
+<p>Available operations include:</p>
+<ul>
+<li>Literal Find/Replace with optional case sensitivity</li>
+<li>Prefix and suffix</li>
+<li>Remove a selected number of characters from the beginning or
+end</li>
+<li>Case conversion</li>
+<li>Preserve <code>720p</code>, <code>1080p</code>, and
+<code>2160p</code> capitalization during case conversion</li>
+<li>Normalize <code>S01E01</code></li>
+<li>Convert <code>1x02</code> to <code>S01E02</code></li>
+<li>Sequential numbering</li>
+<li>Convert spaces to periods</li>
+</ul>
+<p>The proposed filename column updates live. <strong>Rename Checked
+Files</strong> applies the preview to all checked rows; <strong>Rename
+Selected File</strong> changes only the highlighted row. The complete
+batch is validated for collisions, invalid Windows names, and missing
+files before anything is moved. The most recent successful batch can be
+undone.</p>
+<p>When several options are enabled, operations are applied in this
+general order: character removal, Find/Replace, prefix/suffix, case
+conversion, episode normalization, numbering, then Spaces to dots. This
+allows Find/Replace and Spaces to dots to work together predictably.</p>
+<h2 id="common-statuses">Common statuses</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Status</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Not selected</td>
+<td>File is listed but its Encode checkbox is off</td>
+</tr>
+<tr class="even">
+<td>Waiting / Waiting to scan</td>
+<td>Eligible and awaiting processing</td>
+</tr>
+<tr class="odd">
+<td>Checking file</td>
+<td>Waiting for file-stability confirmation</td>
+</tr>
+<tr class="even">
+<td>Sampling</td>
+<td>Test encodes are estimating savings</td>
+</tr>
+<tr class="odd">
+<td>Encoding</td>
+<td>HandBrakeCLI is creating the full output</td>
+</tr>
+<tr class="even">
+<td>Paused</td>
+<td>Current HandBrake encode is paused</td>
+</tr>
+<tr class="odd">
+<td>Completed</td>
+<td>Output passed verification</td>
+</tr>
+<tr class="even">
+<td>Skipped</td>
+<td>Analysis did not recommend encoding or a protected condition was
+found</td>
+</tr>
+<tr class="odd">
+<td>Failed</td>
+<td>Inspection, sampling, encoding, or verification returned an
+error</td>
+</tr>
+<tr class="even">
+<td>Missing</td>
+<td>The represented file is no longer present at its expected path</td>
+</tr>
+</tbody>
+</table>
+<p>Skipped, failed, and cancelled files can be reanalyzed or
+force-encoded when appropriate. Missing rows are disabled until the file
+returns or the row is removed. Automatic directory scans and
+<strong>Scan Now</strong> update newly removed files to
+<strong>Missing</strong> after the scan completes.</p>
+<h3 id="action-column">Action column</h3>
+<p>The Action column provides a quick visual state and the most useful
+row action:</p>
+<ul>
+<li><code>[ Sampling... ]</code>, <code>[ Encoding... ]</code>, and
+<code>[ Paused ]</code> identify the active file and are
+informational.</li>
+<li><code>[ Play ]</code> opens a completed file’s verified output in
+the default media player.</li>
+<li><code>[ Reanalyze ]</code> reruns sampling for a skipped, failed, or
+cancelled file.</li>
+<li><code>[ Queued ]</code> identifies a pending reanalysis and can be
+clicked again to cancel that request.</li>
+<li>A dash means no separate quick action is needed for that row.</li>
+</ul>
+<h2 id="building-the-windows-executables">Building the Windows
+executables</h2>
+<p>Run <code>build.bat</code> from the extracted release folder. It
+installs the required Python build packages and creates:</p>
+<ul>
+<li><code>dist\MKVEncoderQ.exe</code></li>
+<li><code>dist\MKVEncoderQ-CLI.exe</code></li>
+<li><code>dist\USER_GUIDE.html</code></li>
+</ul>
+<p>Keep required external tools in their configured locations or beside
+the executable.</p>
+</body>
+</html>
