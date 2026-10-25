@@ -11,15 +11,15 @@ controls.
 
 ### Encoder
 
-![MKV Encoder Q Encoder tab](screenshots/encoder.png)
+![MKV Encoder Q Encoder tab](https://raw.githubusercontent.com/jsdeprey/MKVEncoderQ/main/screenshots/encoder.png)
 
 ### Cleaner
 
-![MKV Encoder Q Cleaner tab](screenshots/cleaner.png)
+![MKV Encoder Q Cleaner tab](https://raw.githubusercontent.com/jsdeprey/MKVEncoderQ/main/screenshots/cleaner.png)
 
 ### Rename
 
-![MKV Encoder Q Rename tab](screenshots/rename.png)
+![MKV Encoder Q Rename tab](https://raw.githubusercontent.com/jsdeprey/MKVEncoderQ/main/screenshots/rename.png)
 
 Version 5.1.59 separates an idle Active Directory Scanning watcher from active
 Encoder work in the interface. When the queue becomes empty, the Start control
