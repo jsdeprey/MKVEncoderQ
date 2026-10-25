@@ -7,6 +7,20 @@ applications in one Windows interface. The **Encoder**, **Cleaner**, and **Renam
 folders, Settings buttons, configurations, queues, progress displays, and
 controls.
 
+## Screenshots
+
+### Encoder
+
+![MKV Encoder Q Encoder tab](screenshots/encoder.png)
+
+### Cleaner
+
+![MKV Encoder Q Cleaner tab](screenshots/cleaner.png)
+
+### Rename
+
+![MKV Encoder Q Rename tab](screenshots/rename.png)
+
 Version 5.1.59 separates an idle Active Directory Scanning watcher from active
 Encoder work in the interface. When the queue becomes empty, the Start control
 now changes from green **Running** to gray **Waiting**, the status bar reports
