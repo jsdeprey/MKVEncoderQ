@@ -7,6 +7,13 @@ MKV Encoder Q 5.1 combines the Encoder, MKV Cleaner, and batch Rename
 applications in one Windows interface. The Encoder, Cleaner, and Rename tabs retain separate input folders,
 Settings buttons, configurations, queues, progress displays, and controls.
 
+Version 5.1.60 fixes only the Encoder's --no-backup commit ordering.
+Verified same-path MKV output replaces the original directly. For MP4-to-MKV
+or a separate output folder, the verified output is committed before the
+original is deleted. Regression tests cover all four source/destination
+combinations, injected encode/probe/verification/commit/deletion failures,
+cancellation, and existing backup behavior. All other behavior is unchanged.
+
 Version 5.1.59 separates an idle Active Directory Scanning watcher from active
 Encoder work in the interface. When the queue becomes empty, the Start control
 now changes from green Running to gray Waiting, the status bar reports

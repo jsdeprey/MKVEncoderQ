@@ -7,19 +7,12 @@ applications in one Windows interface. The **Encoder**, **Cleaner**, and **Renam
 folders, Settings buttons, configurations, queues, progress displays, and
 controls.
 
-## Screenshots
-
-### Encoder
-
-<img width="1703" height="923" alt="MKV Encoder Q Encoder tab" src="https://github.com/user-attachments/assets/2d3327c4-de7b-442b-ac19-d7439007b794" />
-
-### Cleaner
-
-<img width="1703" height="923" alt="MKV Encoder Q Cleaner tab" src="https://github.com/user-attachments/assets/3d9a4ce1-360c-4e9a-97f3-83f948869265" />
-
-### Rename
-
-<img width="1703" height="924" alt="MKV Encoder Q Rename tab" src="https://github.com/user-attachments/assets/afaee0f9-10d9-43ca-9802-b3c797dae747" />
+Version 5.1.60 fixes only the Encoder's --no-backup commit ordering.
+Verified same-path MKV output replaces the original directly. For MP4-to-MKV
+or a separate output folder, the verified output is committed before the
+original is deleted. Regression tests cover all four source/destination
+combinations, injected encode/probe/verification/commit/deletion failures,
+cancellation, and existing backup behavior. All other behavior is unchanged.
 
 Version 5.1.59 separates an idle Active Directory Scanning watcher from active
 Encoder work in the interface. When the queue becomes empty, the Start control

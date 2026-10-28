@@ -366,9 +366,11 @@ def encode(media: MediaInfo, root: Path, output_root: Path, config: Config, back
             raise EncodeVerificationFailed(str(exc), temporary) from exc
         if backup:
             shutil.move(str(source), str(backup_path))
-        else:
-            source.unlink()
         os.replace(temporary, output)
+        # Same-path output replaces the original directly. For a different
+        # destination, keep the source until the verified output is committed.
+        if not backup and output != source:
+            source.unlink()
     except EncodeCancelled:
         try:
             temporary.unlink(missing_ok=True)
