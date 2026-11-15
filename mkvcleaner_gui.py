@@ -13,6 +13,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from mkvcleaner_core.config import CleanerConfig, load_config, save_config
 from mkvcleaner_core.cleaner import can_use_mkvpropedit
 from mkvcleaner_core.logger import RunLogger
+from video_optimizer.tab_logging import write as write_log, settings_dialog
 from mkvcleaner_core.models import MediaFile
 from mkvcleaner_core.paths import application_directory, locate_mkvmerge, locate_mkvpropedit
 from mkvcleaner_core.process import run_tool
@@ -278,6 +279,7 @@ class SettingsDialog(tk.Toplevel):
         self._check(safety, 3, "Dry run (inspect without changing files)", "dry_run", c.dry_run)
 
         display = self._tab(notebook, "Display & logging")
+        ttk.Button(display, text="Log rotation settings…", command=lambda: settings_dialog(self, "cleaner")).grid(row=4, column=0, columnspan=3, sticky="w", padx=6, pady=8)
         self._row(display, 0, "Log folder", "log_directory", c.log_directory, browse="folder")
         self._check(display, 1, "Create JSON logs", "json_logging", c.json_logging)
         self._check(display, 2, "Show skipped-file details", "show_skipped", c.show_skipped)
@@ -523,7 +525,7 @@ class CleanerGUI(tk.Frame):
         self.settings_button = ttk.Button(toolbar, text="Settings", command=self._settings)
         self.settings_button.pack(side="left", padx=(8, 0))
         self.start_button = ttk.Button(
-            toolbar, text="Start", style="Accent.TButton", command=self._start,
+            toolbar, text="Clean Folder", style="Accent.TButton", command=self._start,
         )
         self.start_button.pack(side="left", padx=(8, 0))
 
@@ -757,6 +759,7 @@ class CleanerGUI(tk.Frame):
 
     def _append_activity_log(self, text: str) -> None:
         """Append one copyable entry to the Cleaner tab's session log."""
+        write_log("cleaner", text)
         log = getattr(self, "activity_log", None)
         if log is None:
             return
@@ -890,11 +893,16 @@ class CleanerGUI(tk.Frame):
         entries = expand_dropped_paths(dropped, {".mkv"})
         added = 0
         for path, _source_root in entries:
-            if (path in self.dropped_queue or path in self.external_queue
-                    or path in self.row_ids):
+            if path in self.dropped_queue or path in self.external_queue:
                 continue
+            if self.running and path in self.row_ids:
+                CleanerGUI._append_activity_log(self, f"Already in the current Cleaner run: {path.name}")
+                continue
+            row = self.row_ids.pop(path, None)
+            if row is not None:
+                self.file_tree.delete(row)
             self.dropped_queue[path] = (
-                "Queued", "Dropped — press Start to clean")
+                "Queued", "Dropped — use Clean Selected or Clean All")
             added += 1
         self._render_pending_queue()
         return added
@@ -978,10 +986,8 @@ class CleanerGUI(tk.Frame):
         status = str(values[2]) if len(values) > 2 else ""
         idle_file = not self.running and path.is_file()
         menu = tk.Menu(self, tearoff=False)
-        action = "Clean Again" if status in {"Done", "Skipped", "Failed"} else (
-            "Retry Inspection" if status == "Failed" else "Clean This File")
         menu.add_command(
-            label=action, command=lambda: self._clean_again(path),
+            label="Clean This File", command=lambda: self._clean_again(path),
             state="normal" if idle_file else "disabled")
         menu.add_command(
             label="Clean Selected Files",
@@ -1286,15 +1292,6 @@ class CleanerGUI(tk.Frame):
                 "Wait for the Encoder session to finish before starting Cleaner.",
                 parent=self)
             return
-        if self.dropped_queue:
-            paths = list(self.dropped_queue)
-            saved = dict(self.dropped_queue)
-            self.dropped_queue.clear()
-            self._render_pending_queue()
-            if not self.start_paths(paths):
-                self.dropped_queue.update(saved)
-                self._render_pending_queue()
-            return
         try:
             config = self._config_with_run_options(load_config(self.config_path))
             input_path = Path(self.input_var.get().strip()).expanduser()
@@ -1305,7 +1302,11 @@ class CleanerGUI(tk.Frame):
             messagebox.showerror("Cannot Start", str(exc), parent=self)
             return
 
-        self._begin_run(config, mkvmerge)
+        try:
+            self._begin_run(config, mkvmerge)
+        except OSError as exc:
+            messagebox.showerror("Cannot Start Cleaner", str(exc), parent=self)
+            return
         threading.Thread(
             target=self._discover_and_run,
             args=(input_path, mkvmerge, config, self.current_logger),
@@ -1313,6 +1314,10 @@ class CleanerGUI(tk.Frame):
         ).start()
 
     def _begin_run(self, config: CleanerConfig, mkvmerge: Path) -> None:
+        log_dir = Path(config.log_directory)
+        if not log_dir.is_absolute():
+            log_dir = application_directory() / log_dir
+        logger = RunLogger(log_dir, config.json_logging)
         self.config = config
         self._reset_run()
         self.total = 0
@@ -1320,10 +1325,6 @@ class CleanerGUI(tk.Frame):
             row = self.worker_tree.insert("", "end", values=(worker_id, "Idle", "—"))
             self.workers[worker_id] = (row, "")
 
-        log_dir = Path(config.log_directory)
-        if not log_dir.is_absolute():
-            log_dir = application_directory() / log_dir
-        logger = RunLogger(log_dir, config.json_logging)
         self.current_logger = logger
         self.running = True
         self.discovery_active = True
@@ -1352,6 +1353,7 @@ class CleanerGUI(tk.Frame):
         self,
         paths: list[Path],
         run_config: CleanerConfig | None = None,
+        *, quiet_busy: bool = False,
     ) -> bool:
         """Start one Cleaner run for explicit files received from Encoder."""
         if self.running:
@@ -1374,15 +1376,22 @@ class CleanerGUI(tk.Frame):
         except Exception as exc:
             messagebox.showerror("Cannot Start Cleaner", str(exc), parent=self)
             return False
-        if self.start_guard_callback:
-            allowed, reason = self.start_guard_callback(unique)
-            if not allowed:
-                messagebox.showwarning(
-                    "File is busy",
-                    reason or "One or more files are currently being encoded.",
-                    parent=self)
-                return False
-        self._begin_run(config, mkvmerge)
+        unique, blocked = self._reserve_run_paths(unique, quiet_busy)
+        if not unique:
+            if blocked and not quiet_busy:
+                messagebox.showwarning("File is busy", next(iter(blocked.values())), parent=self)
+            return False
+        for path, reason in blocked.items():
+            CleanerGUI._append_activity_log(self, f"Busy: {path.name} — {reason}")
+        try:
+            self._begin_run(config, mkvmerge)
+        except OSError as exc:
+            if self.finished_callback:
+                self.finished_callback([])
+            messagebox.showerror("Cannot Start Cleaner", str(exc), parent=self)
+            return False
+        for path in unique:
+            self.dropped_queue.pop(path, None)
         files = [MediaFile(path) for path in unique]
         self.events.put(("discovered", files))
         self.events.put(("discovery_done", files))
@@ -1392,6 +1401,26 @@ class CleanerGUI(tk.Frame):
             name="mkvcleaner-selected", daemon=True,
         ).start()
         return True
+
+    def _reserve_run_paths(
+        self, paths: list[Path], all_or_wait: bool = False,
+    ) -> tuple[list[Path], dict[Path, str]]:
+        if not self.start_guard_callback:
+            return paths, {}
+        allowed, reason = self.start_guard_callback(paths)
+        if allowed:
+            return paths, {}
+        if all_or_wait or len(paths) == 1:
+            return [], {paths[0]: reason}
+        available = []
+        blocked = {}
+        for path in paths:
+            allowed, reason = self.start_guard_callback([path])
+            if allowed:
+                available.append(path)
+            else:
+                blocked[path] = reason
+        return available, blocked
 
     def _discover_and_run(self, input_path, mkvmerge, config, logger) -> None:
         files = []
@@ -1412,7 +1441,7 @@ class CleanerGUI(tk.Frame):
                 return
             if not files:
                 raise ValueError("No eligible MKV files were found.")
-            self._run(files, mkvmerge, config, logger)
+            self.events.put(("folder_ready", files, mkvmerge, config, logger))
         except Exception as exc:
             self.events.put(("fatal", str(exc)))
 
@@ -1522,6 +1551,26 @@ class CleanerGUI(tk.Frame):
                 self.activity_action.set(
                     f"Found {self.total} MKV file(s); starting inspection."
                 )
+        elif kind == "folder_ready":
+            _, files, mkvmerge, config, logger = event
+            if not self.running:
+                return
+            if self.stop_event.is_set():
+                self._handle_event(("discovery_done", files))
+                return
+            available, blocked = self._reserve_run_paths([media.path for media in files])
+            for path, reason in blocked.items():
+                self._set_file(path, "Skipped", reason)
+                self.counts["Skipped"] += 1
+                self.summary_vars["Skipped"].set(str(self.counts["Skipped"]))
+                self._complete_one()
+                CleanerGUI._append_activity_log(self, f"Busy: {path.name} — {reason}")
+            if not available:
+                self._handle_event(("finished", [], logger))
+                return
+            files = [media for media in files if media.path not in blocked]
+            threading.Thread(target=self._run, args=(files, mkvmerge, config, logger),
+                             name="mkvcleaner-folder", daemon=True).start()
         elif kind == "inspect_started":
             media = event[1]
             self._set_file(media.path, "Inspecting", "Reading MKV metadata")

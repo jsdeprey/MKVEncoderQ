@@ -1,4 +1,7 @@
-MKV ENCODER Q 5.1
+MKV ENCODER Q 6.0.8
+
+Version 6.0.8 adds group dragging and folder moves in the Encoder list.
+See RELEASE_NOTES_6.0.8.md for details.
 =================
 
 Created by Jeff Deprey.
@@ -6,6 +9,114 @@ Created by Jeff Deprey.
 MKV Encoder Q 5.1 combines the Encoder, MKV Cleaner, and batch Rename
 applications in one Windows interface. The Encoder, Cleaner, and Rename tabs retain separate input folders,
 Settings buttons, configurations, queues, progress displays, and controls.
+
+Default audio policy for this and future releases: All Streams. New configurations
+and configurations missing audio_stream_mode use all. Explicit saved choices
+(including First English) are preserved. Selecting fewer audio streams is opt-in.
+
+Version 6.0.0-beta.5 renames the comparison action to Play Both - Compare.
+It is disabled when the VLC binding or a matching VLC runtime is absent.
+Windows detection checks standard locations, registered custom installations,
+PATH and the portable VLC folder, including DLL architecture and plugins.
+This does not load VLC into the Encoder process. All 413 tests pass.
+
+Version 6.0.0-beta.4 adds per-video right-click Audio track and Subtitles
+menus, including subtitle Off, in the joined and detached comparison views.
+Right-click either video or its heading/filename/status area. Track choices
+are independent for each file. Selecting audio on the silent side does not
+change the shared audible-source selection. Explicit track choices survive
+asynchronous VLC updates and layout reloads.
+
+Mute Both now toggles: it turns red and reads Unmute Both while muted, then
+restores the previously selected source at the shared volume setting. Listen
+to Backup/Encoded still selects that source directly. All 408 automated tests
+pass. See TEST_CHECKLIST_6.0_BETA4.md for Windows/VLC testing.
+
+Version 6.0.0-beta.3 removes Beta 2's experimental PCM peak meters and their
+two extra audio-only decoders. The improved single-source playback selection,
+one shared volume slider, Listen buttons and light/dark themes remain.
+
+Each video now displays VLC-reported audio state in the controls and above its
+video surface, including detached windows: audio track disabled, muted, zero
+volume, paused, unavailable, or AUDIO ON with track ID, volume and playback
+state. The indicator does not simply echo the selected Listen button. It reports
+the player API state, not actual sound measured from the Windows audio device.
+All 400 automated tests pass. See TEST_CHECKLIST_6.0_BETA3.md.
+
+Version 6.0.0-beta.2 updates the comparison player's audio and appearance.
+Source selection disables the unselected audio track, rather than relying on
+VLC's mute flag alone, and is reapplied as audio initializes or playback resets.
+Large Listen to Backup / Listen to Encoded buttons and Mute Both work with one
+shared 0–100% volume slider. Both files have independent decoded-audio peak
+meters, including the unselected file, with a Listening/off marker.
+
+Meters use two silent audio-only VLC decoders with PCM callbacks; those decoders
+never send audio to speakers and add no video decoding. The bars report stereo
+peak dBFS before comparison volume adjustment, not integrated loudness or a
+quality score. They add audio decoding and file-read overhead and can lag around
+seeks; real 4K/NAS playback must be tested. Missing/paused meter data is explicit.
+
+The comparison player inherits the saved app theme on launch and has a local
+light/dark selector. Window surrounds, controls and menus are themed; video
+pixels and Windows-managed title bars are not altered. All Streams remains the
+fresh-configuration audio default; explicit saved encoding choices are preserved.
+All 397 automated tests pass. See TEST_CHECKLIST_6.0_BETA2.md.
+
+Version 6.0.0-beta.1 adds an experimental Compare with Backup action below
+Play Backup. It opens the original .bak and encoded movie directly through
+VLC's playback engine, without Windows file associations. A shared timeline,
+Play/Pause, ±10-second seeks, Resync, backup offset adjustment and audio selector
+control both videos. Separate windows can be dragged to different monitors;
+the Side by side button reunites them. Changing layouts restarts the playback
+surfaces and restores the shared position. No continuous rate correction is used.
+
+The comparison player runs in an isolated process and never modifies either
+movie. Existing encoding/backup behavior is unchanged. This beta uses installed
+VLC 3.x matching the application's architecture (normally 64-bit); portable VLC
+can alternatively live in a VLC subfolder beside the executable. The build
+includes python-vlc bindings, but this source package does not ship VLC itself.
+Encoding does not require VLC. All 388 automated tests pass; real Windows/4K
+playback and HDR appearance require user testing. See TEST_CHECKLIST_6.0_BETA1.md.
+
+Version 5.1.63 adds Play Backup directly below Play Video in the Encoder
+right-click menu. It opens the original backup through the normal Windows
+file association (for example, VLC associated with .bak). It is enabled only
+when the backup exists and is not currently being created by a retained-output
+action. It uses the original source backup even when the completed movie was
+written to a separate output directory. No files are renamed or copied for
+playback. All 378 existing automated tests pass.
+
+Version 5.1.62 fixes two workflow problems found during 5.1.61 testing.
+Inspect File now explicitly retries recorded errors and bypasses cached media
+information. Temporary inspection errors (including copy locks and changing
+files) retry up to five times with cancellable delays of 2, 4, 8, 16 and 30
+seconds. Persistent failures remain visible; retries do not require another
+file to arrive. Files changing during probing are not cached as successful.
+
+Accept Retained Output and Delete Retained Output now work while a different
+file is encoding. Per-file reservations prevent conflicting Encoder claims,
+Cleaner reservations, renames, and backup actions against the same files.
+Manual acceptance uses an independent background task and does not replace
+the Encoder worker or alter its running/cancellation state. Duration-only
+verification, revalidation and original-backup safeguards remain in force.
+
+All 378 automated tests pass. See TEST_CHECKLIST_5.1.62.md for Windows checks.
+
+Version 5.1.61 adds source-identifiable leading-dot temporary filenames,
+Read-only correction for application-created retained files, and failed-row
+right-click actions to Play, Accept, or Delete Retained Output. Acceptance is
+restricted to duration-only verification failures and re-runs all other checks.
+The original is preserved as an exclusive .bak before output commit; existing
+backups and unrelated outputs are never overwritten. Acceptance runs in the
+background and records both durations and their difference in File Details
+and the activity log. The original 5.1.61 Stop requirement is removed in 5.1.62 for unrelated files.
+
+Renaming now preserves full-list order (including filtered and appended rows)
+until an explicit Sort selection. Completed rows show the actual output name
+and folder, with their original source path retained in File Details.
+
+See TEST_CHECKLIST_5.1.61.md for practical Windows checks. All 363 automated
+tests pass. The source package includes build.bat for compiling on Windows.
 
 Version 5.1.60 fixes only the Encoder's --no-backup commit ordering.
 Verified same-path MKV output replaces the original directly. For MP4-to-MKV
@@ -695,7 +806,7 @@ Backups are enabled by default and append .bak to the original filename after
 the new MKV passes verification.
 
 Double-click MKVEncoderQ.exe with no command-line arguments to open the
-GUI. Choose an input folder and press Start. The upper panel lists discovered
+GUI. Choose an input folder and press Clean Folder. The upper panel lists discovered
 files, status, projected savings, projected output, and encode/skip decision.
 The lower panel shows a larger filename, encoder settings, projected result,
 audio handling, progress percentage, FPS, output size, elapsed time, and ETA.

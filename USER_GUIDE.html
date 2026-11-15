@@ -412,7 +412,7 @@ folder.</li>
 files from being processed too early.</li>
 </ul>
 <h2 id="audio-behavior">Audio behavior</h2>
-<p>The default <strong>First English</strong> mode keeps the first
+<p>The default <strong>All Streams</strong> mode keeps every audio stream. <strong>First English</strong> remains an optional mode and keeps the first
 stream tagged <code>eng</code>, <code>en</code>, or
 <code>english</code>. If no English tag exists, the first audio stream
 is kept and a warning is shown so the output is not left without
@@ -462,28 +462,32 @@ yet.</p>
 the complete row is highlighted: blue while sampling, green while
 encoding, and amber while paused. The Action column also shows the
 matching active state.</p>
+<p><strong>Accept Retained Output</strong> is available when an ownership record
+shows the encode reached verification. The app rechecks the files and shows
+the differences before asking you to accept. Acceptance preserves the original
+as a backup. Subtitle count and language differences are warnings.</p>
 <h2 id="cleaner-tab">Cleaner tab</h2>
 <p>The Cleaner works only on MKV files and uses MKVToolNix. Files can be
 added from its own folder, drag-and-drop, or the Encoder right-click
 menu. <strong>Send All Files in This Directory to Cleaner</strong> adds
 every eligible Encoder row from the clicked file’s exact directory after
 confirmation; filtered-out rows are included, missing rows are excluded,
-and subdirectories are not included. A file still waiting, sampling, or
-encoding appears in Cleaner as waiting for its encoded output. Completed
-files can be cleaned immediately, even while Encoder works on other
-files.</p>
+and subdirectories are not included. Waiting MKVs and completed files
+can be cleaned while Encoder works on a different file. An active encode
+or a source that needs to become MKV waits for its encoded output.</p>
 <p>The Cleaner page has separate <strong>Video</strong>,
 <strong>Audio</strong>, and <strong>Subtitles</strong> checkboxes under
 <strong>Remove track names</strong>. These remove only the optional
 display name attached to the selected track types. Language codes,
 codecs, and the actual video, audio, and subtitle streams are
 preserved.</p>
-<p>Choose <strong>Clean Again</strong> to inspect the selected file
+<p>Choose <strong>Clean This File</strong> to inspect the selected file
 again using the one-run checkboxes currently shown on the Cleaner tab.
 This allows another cleanup pass after enabling an option such as
 <strong>Video</strong> track-name removal. <strong>Remove All</strong>
 clears every Cleaner row; if queued or waiting requests exist, the app
 asks before cancelling them. It never deletes video files.</p>
+<p><strong>Clean Folder</strong> scans and cleans the input folder independently of the list.</p>
 <p><strong>Clean Selected</strong> cleans or re-cleans the highlighted
 available MKV files. <strong>Clean All</strong> confirms the count and
 cleans or re-cleans every currently available MKV in the Cleaner list.
@@ -494,7 +498,7 @@ failures.</p>
 <strong>Forced</strong> are independent. Each option clears that flag
 from every subtitle track in the files cleaned during that run.
 Selecting both turns both flags off without removing subtitle tracks.
-The Cleaner reinspects the file for <strong>Clean Again</strong>, so a
+The Cleaner reinspects the file for <strong>Clean This File</strong>, so a
 previously cleaned file is processed again if any requested flag is
 still enabled; it reports Already Clean only when the requested changes
 are already satisfied. These operations normally use
@@ -640,5 +644,9 @@ installs the required Python build packages and creates:</p>
 </ul>
 <p>Keep required external tools in their configured locations or beside
 the executable.</p>
+<h2>Experimental comparison player — 6.0 Beta 1</h2><p>Right-click a completed movie with its backup and choose <strong>Compare with Backup</strong>. Installed VLC 3.x supplies playback; no .bak association is needed. Shared controls operate both videos. <strong>Separate windows</strong> allows manual monitor placement; <strong>Side by side</strong> rejoins them. See TEST_CHECKLIST_6.0_BETA1.md in the source package for setup and testing limits.</p>
+<h2>Comparison audio and theme — Beta 2</h2><p>Use <strong>Listen to Backup</strong> or <strong>Listen to Encoded</strong>, <strong>Mute Both</strong>, and one shared Volume slider. Separate meters show decoded stereo audio peaks before volume adjustment; Listening/off marks the audible source. Theme follows the saved app setting on launch and can be changed locally in the player. See TEST_CHECKLIST_6.0_BETA2.md in the source package for details.</p>
+<h2>Comparison audio indicators — Beta 3</h2><p>Peak meters are removed. Indicators in the controls and video windows show VLC-reported track, mute, volume and playback state. AUDIO ON means VLC reports enabled, unmuted playback at nonzero volume; it does not measure speaker output.</p>
+<h2>Comparison track menus and mute — Beta 4</h2><p>Right-click either video or its heading for independent Audio track and Subtitles menus, including subtitle Off. Selecting a track on the silent side does not make it audible. Mute Both turns red and reads Unmute Both; clicking again restores the prior audio source at the shared volume.</p>
 </body>
 </html>

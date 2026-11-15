@@ -15,6 +15,51 @@ from video_optimizer.queueing import FileState, LiveQueue
 
 
 class DisplayTests(unittest.TestCase):
+    def test_handle_drags_adjacent_selection_in_both_directions(self):
+        rows = ["a", "b", "c", "d", "e"]
+
+        def move(row, _parent, index):
+            rows.remove(row)
+            rows.insert(index, row)
+
+        table = Mock()
+        table.identify_column.return_value = "#1"
+        table.identify_row.side_effect = lambda y: rows[y]
+        table.set.return_value = "Waiting"
+        table.selection.return_value = ("c", "b")
+        table.get_children.side_effect = lambda: tuple(rows)
+        table.index.side_effect = rows.index
+        table.move.side_effect = move
+        gui = SimpleNamespace(table=table, _sync_queue_order=Mock())
+
+        self.assertEqual(OptimizerGUI._table_press(
+            gui, SimpleNamespace(x=1, y=2, state=0)), "break")
+        table.selection_set.assert_not_called()
+        OptimizerGUI._table_drag(gui, SimpleNamespace(y=4))
+        self.assertEqual(rows, ["a", "d", "e", "b", "c"])
+        OptimizerGUI._table_drag(gui, SimpleNamespace(y=0))
+        self.assertEqual(rows, ["b", "c", "a", "d", "e"])
+        OptimizerGUI._table_click(gui, SimpleNamespace(x=1))
+        gui._sync_queue_order.assert_called_once_with(manual=True)
+
+    def test_move_folder_includes_filtered_rows_and_preserves_active_work(self):
+        folder = Path("shows") / "Season 2"
+        other = str(Path("shows") / "other.mkv")
+        active = str(folder / "active.mkv")
+        hidden = str(folder / "hidden.mkv")
+        visible = str(folder / "visible.mkv")
+        table = Mock()
+        table.set.side_effect = lambda row, column: "Encoding" if row == active else "Waiting"
+        table.get_children.return_value = (other, active, visible)
+        gui = SimpleNamespace(
+            table=table, _all_table_rows=lambda: [other, active, hidden, visible],
+            _sync_queue_order=Mock())
+        OptimizerGUI._move_folder_rows(gui, folder, "top")
+        self.assertEqual(gui.filter_order, [hidden, visible, other, active])
+        self.assertEqual(table.move.call_args_list, [
+            call(visible, "", 0), call(other, "", 1), call(active, "", 2)])
+        gui._sync_queue_order.assert_called_once_with(manual=True)
+
     def test_send_directory_to_cleaner_uses_exact_folder_and_logical_rows(self):
         root = Path("library").resolve()
         first = (root / "Show" / "One.mkv").resolve()
@@ -328,7 +373,7 @@ class DisplayTests(unittest.TestCase):
             _all_table_rows=lambda: OptimizerGUI._all_table_rows(gui),
             _refresh_encode_all_heading=Mock(),
             _refresh_force_all_heading=Mock(),
-            apply_media_view=lambda: OptimizerGUI.apply_media_view(gui),
+            apply_media_view=lambda **kwargs: OptimizerGUI.apply_media_view(gui, **kwargs),
         )
         with patch.object(OptimizerGUI, "_path_matches_active_filter",
                           return_value=True), patch.object(
@@ -375,8 +420,8 @@ class DisplayTests(unittest.TestCase):
         source = Path(__file__).parents[1] / "video_optimizer" / "gui.py"
         text = source.read_text(encoding="utf-8")
         self.assertIn('(\"file\", \"File\", 240), (\"path\", \"Path\", 300)', text)
-        self.assertIn('OptimizerGUI._marked_filename(self, path), status', text)
-        self.assertIn('str(path.parent)', text)
+        self.assertIn('OptimizerGUI._marked_filename(self, displayed_path), status', text)
+        self.assertIn('str(displayed_path.parent)', text)
 
     def test_force_change_does_not_move_visible_row(self):
         source = inspect.getsource(OptimizerGUI._set_file_forced)

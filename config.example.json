@@ -31,7 +31,7 @@
     "dts",
     "dtshd"
   ],
-  "audio_stream_mode": "first_english",
+  "audio_stream_mode": "all",
   "audio_bitrate_per_channel": 64000,
   "minimum_audio_bitrate": 128000,
   "duration_tolerance_seconds": 2.0,

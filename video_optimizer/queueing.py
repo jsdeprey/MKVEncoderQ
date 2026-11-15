@@ -42,6 +42,7 @@ class LiveQueue:
         self.reanalysis_queue: deque[Path] = deque()
         self.manual_roots: dict[Path, Path] = {}
         self.cleaning_reserved: set[Path] = set()
+        self.retained_reserved: set[Path] = set()
         # Incremental NAS inventory releases the queue lock while walking.
         # Rename may therefore migrate an item after the walker recorded its
         # old path.  Recheck only those destinations before declaring them
@@ -392,13 +393,19 @@ class LiveQueue:
         with self._lock:
             return list(self.items.values())
 
+    def set_allowed_paths(self, paths: set[Path] | None) -> None:
+        """Limit a run without discarding the existing inventory or selections."""
+        with self._lock:
+            self.allowed_paths = set(paths) if paths is not None else None
+
     def claim_waiting(self) -> FileState | None:
         with self._lock:
             item = None
             deferred: list[Path] = []
             while self.reanalysis_queue and item is None:
                 path = self.reanalysis_queue.popleft()
-                if path in self.cleaning_reserved:
+                if (path in self.cleaning_reserved or path in self.retained_reserved
+                        or (self.allowed_paths is not None and path not in self.allowed_paths)):
                     deferred.append(path)
                     continue
                 candidate = self.items.get(path)
@@ -408,15 +415,34 @@ class LiveQueue:
             if item is None:
                 item = next((x for x in self.items.values()
                              if x.status == "Waiting" and x.selected
-                             and x.path not in self.cleaning_reserved), None)
+                             and (self.allowed_paths is None or x.path in self.allowed_paths)
+                             and x.path not in self.cleaning_reserved
+                             and x.path not in self.retained_reserved), None)
             if item is not None:
                 item.status = "Sampling"
             return item
+
+    def reserve_retained(self, paths: set[Path]) -> bool:
+        """Reserve just the affected files against an Encoder claim."""
+        with self._lock:
+            if paths & (self.retained_reserved | self.cleaning_reserved):
+                return False
+            if any(path in self.items and self.items[path].status in {
+                    "Sampling", "Encoding", "Paused"} for path in paths):
+                return False
+            self.retained_reserved.update(paths)
+            return True
+
+    def release_retained(self, paths: set[Path]) -> None:
+        with self._lock:
+            self.retained_reserved.difference_update(paths)
 
     def reserve_for_cleaning(self, paths: list[Path]) -> tuple[bool, list[Path], str]:
         """Atomically protect idle Encoder files while Cleaner edits them."""
         with self._lock:
             known = [self._known_or_resolved(path) for path in paths]
+            if set(known) & self.retained_reserved:
+                return False, [], "Retained-output action in progress"
             active = [path for path in known
                       if path in self.items and self.items[path].status in {
                           "Sampling", "Encoding", "Paused"}]
@@ -424,15 +450,13 @@ class LiveQueue:
                 return False, [], (
                     f"{active[0].name} is currently "
                     f"{self.items[active[0]].status.lower()}")
-            reserved = []
+            self.cleaning_reserved.update(known)
             for path in known:
                 item = self.items.get(path)
                 if item is not None and item.status in {
                         "Checking file...", "Waiting to scan", "Waiting", "Queued"}:
-                    self.cleaning_reserved.add(path)
                     item.detail = "Temporarily reserved for Cleaner"
-                    reserved.append(path)
-            return True, reserved, ""
+            return True, known, ""
 
     def release_cleaning(self, paths: list[Path]) -> list[Path]:
         """Return Cleaner-reserved paths to their unchanged queue positions."""

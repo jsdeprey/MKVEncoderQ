@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .config import application_directory
 from .scanner import VIDEO_EXTENSIONS
+from .tab_logging import write as write_log, settings_dialog
 
 
 INVALID_WINDOWS_CHARS = set('<>:"/\\|?*')
@@ -30,6 +31,7 @@ class RenameConfig:
 
 @dataclass
 class RenameOptions:
+    whole_filename: bool = False
     find: str = ""
     replacement: str = ""
     case_sensitive: bool = False
@@ -69,12 +71,12 @@ def save_rename_config(config: RenameConfig, path: Path | None = None) -> None:
 
 def transform_stem(stem: str, options: RenameOptions, index: int = 0) -> str:
     """Apply Rename-tab operations in their documented order."""
-    result = stem
+    result = options.replacement if options.whole_filename else stem
     if options.remove_start:
         result = result[max(0, options.remove_start):]
     if options.remove_end:
         result = result[:-max(0, options.remove_end)] if len(result) > options.remove_end else ""
-    if options.find:
+    if options.find and not options.whole_filename:
         flags = 0 if options.case_sensitive else re.IGNORECASE
         result = re.sub(re.escape(options.find),
                         lambda _match: options.replacement, result, flags=flags)
@@ -221,6 +223,7 @@ class RenameGUI(ttk.Frame):
         self.paths: dict[str, Path] = {}
         self.last_rename: dict[Path, Path] = {}
         self.input_var = tk.StringVar(value=self.config_data.default_input_directory)
+        self.whole_filename_var = tk.BooleanVar()
         self.find_var = tk.StringVar()
         self.replace_var = tk.StringVar()
         self.case_sensitive_var = tk.BooleanVar()
@@ -239,7 +242,7 @@ class RenameGUI(ttk.Frame):
         self.status_var = tk.StringVar(value="Add files or a folder to begin.")
         self._build()
         for variable in (
-                self.find_var, self.replace_var, self.case_sensitive_var,
+                self.whole_filename_var, self.find_var, self.replace_var, self.case_sensitive_var,
                 self.prefix_var, self.suffix_var, self.remove_start_var,
                 self.remove_end_var, self.case_mode_var,
                 self.preserve_resolution_case_var, self.normalize_episode_var,
@@ -257,13 +260,17 @@ class RenameGUI(ttk.Frame):
         ttk.Button(top, text="Load Folder", command=self.load_input_folder).grid(row=0, column=3, padx=3)
         ttk.Button(top, text="Add Files...", command=self.add_files_dialog).grid(row=0, column=4, padx=3)
         ttk.Button(top, text="Add Folder...", command=self.add_folder_dialog).grid(row=0, column=5, padx=3)
-        ttk.Button(top, text="Set Default Folder...", command=self.settings).grid(row=0, column=6, padx=3)
+        ttk.Button(top, text="Set Default Folder...", command=self._default_folder_settings).grid(row=0, column=6, padx=3)
+        ttk.Button(top, text="Settings", command=self.settings).grid(row=0, column=7, padx=3)
         top.columnconfigure(1, weight=1)
 
         controls = ttk.LabelFrame(self, text="Rename Controls", padding=8)
         controls.pack(fill="x", padx=10, pady=(0, 8))
-        ttk.Label(controls, text="Find").grid(row=0, column=0, sticky="w")
-        ttk.Entry(controls, textvariable=self.find_var, width=24).grid(row=0, column=1, sticky="ew", padx=4)
+        ttk.Checkbutton(controls, text="Whole filename", variable=self.whole_filename_var).grid(row=0, column=0, sticky="w")
+        self.find_entry = ttk.Entry(controls, textvariable=self.find_var, width=24)
+        self.find_entry.grid(row=0, column=1, sticky="ew", padx=4)
+        self.whole_filename_var.trace_add("write", lambda *_: self.find_entry.configure(
+            state="disabled" if self.whole_filename_var.get() else "normal"))
         ttk.Label(controls, text="Replace with").grid(row=0, column=2, sticky="w")
         ttk.Entry(controls, textvariable=self.replace_var, width=24).grid(row=0, column=3, sticky="ew", padx=4)
         ttk.Checkbutton(controls, text="Case Sensitive", variable=self.case_sensitive_var).grid(row=0, column=4, padx=6)
@@ -313,6 +320,11 @@ class RenameGUI(ttk.Frame):
         ttk.Button(buttons, text="Rename Checked Files",
                    command=self.apply_renames).pack(side="right")
 
+        combined_area = ttk.Frame(buttons)
+        combined_area.pack(side="left", fill="x", expand=True)
+        ttk.Button(combined_area, text="Rename Checked / Reset Controls / Remove All",
+                   command=self.rename_reset_remove_all).pack(anchor="center", padx=8)
+
         columns = ("checked", "current", "proposed", "path", "status")
         self.table = ttk.Treeview(self, columns=columns, show="headings", height=17, selectmode="extended")
         for key, label, width in (
@@ -355,6 +367,7 @@ class RenameGUI(ttk.Frame):
 
     def _append_activity_log(self, text: str) -> None:
         """Append one copyable entry to the Rename tab's session log."""
+        write_log("rename", text)
         log = getattr(self, "activity_log", None)
         if log is None:
             return
@@ -370,6 +383,7 @@ class RenameGUI(ttk.Frame):
             except (tk.TclError, ValueError):
                 return default
         return RenameOptions(
+            whole_filename=(self.whole_filename_var.get() if hasattr(self, "whole_filename_var") else False),
             find=self.find_var.get(), replacement=self.replace_var.get(),
             case_sensitive=self.case_sensitive_var.get(), prefix=self.prefix_var.get(),
             suffix=self.suffix_var.get(), remove_start=max(0, integer(self.remove_start_var, 0)),
@@ -588,6 +602,8 @@ class RenameGUI(ttk.Frame):
             RenameGUI._append_activity_log(self, f"Removed all {removed} file(s).")
 
     def reset_controls(self) -> None:
+        if hasattr(self, "whole_filename_var"):
+            self.whole_filename_var.set(False)
         self.find_var.set(""); self.replace_var.set("")
         self.case_sensitive_var.set(False); self.prefix_var.set(""); self.suffix_var.set("")
         self.remove_start_var.set(0); self.remove_end_var.set(0)
@@ -604,6 +620,17 @@ class RenameGUI(ttk.Frame):
             return
         self._apply_paths(checked)
 
+    def rename_reset_remove_all(self) -> None:
+        checked = self.checked_paths()
+        if not checked:
+            messagebox.showinfo("Rename Files", "Check one or more files first.", parent=self)
+            return
+        completed = self._apply_paths(checked)
+        if completed is None:
+            return
+        self.reset_controls()
+        self.remove_all()
+
     def apply_selected_rename(self) -> None:
         """Rename only the focused/highlighted row, independent of checkboxes."""
         row = self.table.focus()
@@ -616,7 +643,7 @@ class RenameGUI(ttk.Frame):
             return
         self._apply_paths([path])
 
-    def _apply_paths(self, paths: list[Path]) -> None:
+    def _apply_paths(self, paths: list[Path]) -> dict[Path, Path] | None:
         busy = [(path, self.busy_callback(path)[1]) for path in paths
                 if self.busy_callback(path)[0]]
         available = [path for path in paths if path not in {item[0] for item in busy}]
@@ -649,6 +676,7 @@ class RenameGUI(ttk.Frame):
                           if self.companion_plan_callback else {})
             validate_rename_plan({**changed, **companions})
         except ValueError as exc:
+            write_log("rename", f"Rename validation failed: {exc}")
             messagebox.showerror("Cannot rename files", str(exc), parent=self)
             return
         if not messagebox.askyesno("Confirm Rename", f"Rename {len(changed)} file(s)?\n\n{preview}", parent=self):
@@ -657,17 +685,22 @@ class RenameGUI(ttk.Frame):
             completed_all = execute_rename_plan({**changed, **companions})
             completed = {old: completed_all[old] for old in changed}
             if self.renamed_callback:
-                self.renamed_callback(completed)
+                self.renamed_callback(completed_all)
         except (OSError, ValueError) as exc:
+            write_log("rename", f"Rename failed: {exc}")
             messagebox.showerror("Rename failed", str(exc), parent=self)
             return
+        for old, new in completed_all.items():
+            write_log("rename", f"Rename transaction: {old} -> {new}")
         self.last_rename = completed
+        self.last_rename_all = completed_all
         self.undo_button.configure(state="normal")
         self._replace_paths(completed)
         self.status_var.set(f"Renamed {len(completed)} file(s).")
         for old, new in completed.items():
             RenameGUI._append_activity_log(
                 self, f"Renamed: {old.name} → {new.name}")
+        return completed if not busy else None
 
     def _replace_paths(self, mapping: dict[Path, Path]) -> None:
         records: list[tuple[int, str, Path]] = []
@@ -696,23 +729,29 @@ class RenameGUI(ttk.Frame):
             return
         reverse = {new: old for old, new in self.last_rename.items()}
         try:
-            companions = (self.companion_plan_callback(reverse)
-                          if self.companion_plan_callback else {})
+            recorded = getattr(self, "last_rename_all", None)
+            companions = ({new: old for old, new in recorded.items() if old not in self.last_rename}
+                          if recorded is not None else
+                          (self.companion_plan_callback(reverse) if self.companion_plan_callback else {}))
             validate_rename_plan({**reverse, **companions})
         except ValueError as exc:
+            write_log("rename", f"Undo validation failed: {exc}")
             messagebox.showerror("Cannot undo rename", str(exc), parent=self)
             return
-        if any(self.busy_callback(path)[0] for path in reverse):
+        if any(self.busy_callback(path)[0] for path in {**reverse, **companions}):
             messagebox.showwarning("Cannot undo rename", "One or more renamed files are currently busy.", parent=self)
             return
         try:
             completed_all = execute_rename_plan({**reverse, **companions})
             completed = {old: completed_all[old] for old in reverse}
             if self.renamed_callback:
-                self.renamed_callback(completed)
+                self.renamed_callback(completed_all)
         except OSError as exc:
+            write_log("rename", f"Undo failed: {exc}")
             messagebox.showerror("Undo failed", str(exc), parent=self)
             return
+        for old, new in completed_all.items():
+            write_log("rename", f"Undo transaction: {old} -> {new}")
         self._replace_paths(completed)
         self.last_rename = {}
         self.undo_button.configure(state="disabled")
@@ -722,6 +761,12 @@ class RenameGUI(ttk.Frame):
                 self, f"Undo: {old.name} → {new.name}")
 
     def settings(self) -> None:
+        dialog = tk.Toplevel(self)
+        dialog.title("Rename Settings")
+        ttk.Button(dialog, text="Set Default Folder…", command=self._default_folder_settings).pack(padx=18, pady=12)
+        ttk.Button(dialog, text="Logging…", command=lambda: settings_dialog(dialog, "rename")).pack(padx=18, pady=12)
+
+    def _default_folder_settings(self) -> None:
         selected = filedialog.askdirectory(
             parent=self, title="Set Default Rename Folder",
             initialdir=self.input_var.get() or None)

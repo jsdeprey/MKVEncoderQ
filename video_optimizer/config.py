@@ -32,7 +32,7 @@ class Config:
     audio_passthrough_codecs: tuple[str, ...] = (
         "aac", "ac3", "eac3", "truehd", "dts", "dtshd",
     )
-    audio_stream_mode: str = "first_english"
+    audio_stream_mode: str = "all"
     audio_bitrate_per_channel: int = 64_000
     minimum_audio_bitrate: int = 128_000
     duration_tolerance_seconds: float = 2.0

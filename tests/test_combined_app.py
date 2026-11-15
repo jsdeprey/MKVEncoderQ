@@ -316,10 +316,9 @@ class CombinedAppTests(unittest.TestCase):
     def test_clean_request_can_be_removed_from_pending_and_visible_state(self):
         with tempfile.TemporaryDirectory() as directory:
             source = (Path(directory) / "source.mp4").resolve()
-            output = source.with_suffix(".mkv")
             coordinator = CleanCoordinator()
-            coordinator.request(source, "Waiting", True, planned_output=output)
-            coordinator.cancel(output)
+            coordinator.request(source, "Waiting", True)
+            coordinator.cancel(source)
             self.assertEqual(coordinator.visible_snapshot(), {})
             self.assertNotIn(source, coordinator.pending)
 
@@ -405,13 +404,12 @@ class CombinedAppTests(unittest.TestCase):
                 cleaner_tab="cleaner-tab",
                 clean_coordinator=CleanCoordinator(),
                 notebook=Mock(),
-                _planned_output=Mock(return_value=output),
             )
             app._dispatch_ready_clean = lambda: CombinedApp._dispatch_ready_clean(app)
 
             CombinedApp.request_clean(app, [source], switch_tab=False)
 
-            cleaner.start_paths.assert_called_once_with([output])
+            cleaner.start_paths.assert_called_once_with([output], quiet_busy=True)
             app.notebook.select.assert_not_called()
 
     def test_combined_clean_request_can_leave_encoder_tab_selected(self):
@@ -598,7 +596,7 @@ class CombinedAppTests(unittest.TestCase):
             source.write_bytes(b"source")
             output.write_bytes(b"encoded")
             coordinator = CleanCoordinator()
-            coordinator.request(source, "Encoding", True, planned_output=output)
+            coordinator.request(source, "Encoding", True)
 
             coordinator.reconcile_completed({source.resolve(): output.resolve()})
 
@@ -630,18 +628,20 @@ class CombinedAppTests(unittest.TestCase):
             output = root / "encoded output name.mkv"
             source.write_bytes(b"source")
             coordinator = CleanCoordinator()
-            coordinator.request(source, "Waiting", False, planned_output=output)
+            coordinator.request(source, "Waiting", False)
             self.assertEqual(coordinator.drain(), [])
             self.assertIn(source.resolve(), coordinator.pending)
             self.assertEqual(
-                coordinator.visible_snapshot()[output.resolve()],
+                coordinator.visible_snapshot()[source.resolve()],
                 ("Waiting for Encode",
                  "Waiting for different source name.mp4 to finish encoding"),
             )
+            self.assertNotIn(output.resolve(), coordinator.visible_snapshot())
             output.write_bytes(b"encoded")
             coordinator.output_ready(source, output)
             self.assertEqual(coordinator.drain(), [output.resolve()])
             self.assertNotIn(source.resolve(), coordinator.pending)
+            self.assertNotIn(source.resolve(), coordinator.visible_snapshot())
             self.assertEqual(
                 coordinator.visible_snapshot()[output.resolve()],
                 ("Queued", "Waiting for Cleaner"),
@@ -665,15 +665,34 @@ class CombinedAppTests(unittest.TestCase):
         self.assertEqual(app.cleaner_reserved_paths, {path})
         encoder._emit.assert_called_once()
 
-    def test_manual_clean_does_not_satisfy_clean_after_encode_request(self):
+    def test_cleaner_batch_can_reserve_other_files_when_one_is_busy(self):
+        active, waiting = Path("active.mkv"), Path("waiting.mkv")
+
+        def guard(paths):
+            return (False, "active.mkv is encoding") if active in paths else (True, "")
+
+        gui = SimpleNamespace(start_guard_callback=guard)
+        available, blocked = CleanerGUI._reserve_run_paths(gui, [active, waiting])
+        self.assertEqual(available, [waiting])
+        self.assertEqual(blocked, {active: "active.mkv is encoding"})
+
+    def test_waiting_mkv_can_be_sent_to_cleaner_during_another_encode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "waiting.mkv"
+            path.touch()
+            coordinator = CleanCoordinator()
+            coordinator.request(path, "Waiting", True)
+            coordinator.request(path, "Waiting", True)
+            self.assertEqual(list(coordinator.ready), [path.resolve()])
+            self.assertEqual(coordinator.drain(), [path.resolve()])
+
+    def test_pending_clean_for_active_encode_waits_for_the_replacement(self):
         with tempfile.TemporaryDirectory() as directory:
             path = (Path(directory) / "movie.mkv").resolve()
             path.write_bytes(b"original")
             coordinator = CleanCoordinator()
-            coordinator.request(path, "Waiting", True, planned_output=path)
+            coordinator.request(path, "Encoding", True)
 
-            # Cleaner may clean the original immediately, but that operation
-            # must not consume the distinct request for the encoded replacement.
             self.assertIn(path, coordinator.pending)
             self.assertEqual(coordinator.drain(), [])
 
@@ -699,15 +718,14 @@ class CombinedAppTests(unittest.TestCase):
     def test_non_mkv_clean_request_is_cleared_when_encode_is_skipped(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.avi"
-            output = source.with_suffix(".mkv")
             source.write_bytes(b"source")
             coordinator = CleanCoordinator()
-            coordinator.request(source, "Waiting", False, planned_output=output)
+            coordinator.request(source, "Waiting", False)
             coordinator.status_changed(source, "Skipped")
             self.assertEqual(coordinator.drain(), [])
             self.assertNotIn(source.resolve(), coordinator.pending)
             self.assertEqual(
-                coordinator.visible_snapshot()[source.with_suffix(".mkv").resolve()],
+                coordinator.visible_snapshot()[source.resolve()],
                 ("Not Cleaned", "No MKV output — encode skipped"),
             )
 

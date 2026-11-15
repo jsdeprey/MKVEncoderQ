@@ -249,7 +249,7 @@ The final **File Details...** item in the Encoder right-click menu opens a selec
 
 ## Audio behavior
 
-The default **First English** mode keeps the first stream tagged `eng`, `en`, or `english`. If no English tag exists, the first audio stream is kept and a warning is shown so the output is not left without audio.
+The default **All Streams** mode keeps every audio stream. **First English** remains an optional mode and keeps the first stream tagged `eng`, `en`, or `english`. If no English tag exists, the first audio stream is kept and a warning is shown so the output is not left without audio.
 
 Auto passthrough permits AAC, AC3, E-AC3, TrueHD, DTS, and DTS-HD by default. Other formats are converted to AAC using the original channel count and configured bitrate rules.
 
@@ -282,16 +282,17 @@ To make active work easy to locate without the old Progress column, the complete
 
 ## Cleaner tab
 
-The Cleaner works only on MKV files and uses MKVToolNix. Files can be added from its own folder, drag-and-drop, or the Encoder right-click menu. **Send All Files in This Directory to Cleaner** adds every eligible Encoder row from the clicked file's exact directory after confirmation; filtered-out rows are included, missing rows are excluded, and subdirectories are not included. A file still waiting, sampling, or encoding appears in Cleaner as waiting for its encoded output. Completed files can be cleaned immediately, even while Encoder works on other files.
+The Cleaner works only on MKV files and uses MKVToolNix. Files can be added from its own folder, drag-and-drop, or the Encoder right-click menu. **Send All Files in This Directory to Cleaner** adds every eligible Encoder row from the clicked file's exact directory after confirmation; filtered-out rows are included, missing rows are excluded, and subdirectories are not included. Waiting MKVs and completed files can be cleaned while Encoder works on a different file. An active encode or a source that needs to become MKV waits for its encoded output.
 
 The Cleaner page has separate **Video**, **Audio**, and **Subtitles** checkboxes under **Remove track names**. These remove only the optional display name attached to the selected track types. Language codes, codecs, and the actual video, audio, and subtitle streams are preserved.
 
-Choose **Clean Again** to inspect the selected file again using the one-run
+Choose **Clean This File** to inspect the selected file again using the one-run
 checkboxes currently shown on the Cleaner tab. This allows another cleanup
 pass after enabling an option such as **Video** track-name removal. **Remove
 All** clears every Cleaner row; if queued or waiting requests exist, the app
 asks before cancelling them. It never deletes video files.
 
+**Clean Folder** scans and cleans the folder in the input box independently of the list.
 **Clean Selected** cleans or re-cleans the highlighted available MKV files.
 **Clean All** confirms the count and cleans or re-cleans every currently
 available MKV in the Cleaner list. Both use the one-run options currently
@@ -301,7 +302,7 @@ and are not treated as failures.
 **Clear subtitle flags: Default** and **Forced** are independent. Each option
 clears that flag from every subtitle track in the files cleaned during that
 run. Selecting both turns both flags off without removing subtitle tracks. The
-Cleaner reinspects the file for **Clean Again**, so a previously cleaned file
+Cleaner reinspects files for every explicit cleaning run, so a previously cleaned file
 is processed again if any requested flag is still enabled; it reports Already
 Clean only when the requested changes are already satisfied. These operations
 normally use `mkvpropedit` to modify the MKV header in place without remuxing or
@@ -388,3 +389,82 @@ Run `build.bat` from the extracted release folder. It installs the required Pyth
 
 Keep required external tools in their configured locations or beside the executable.
 
+
+## Experimental comparison player — 6.0 Beta 1
+
+Right-click a completed movie with its backup and select Compare with Backup.
+Installed VLC 3.x supplies playback; .bak association is unnecessary. Shared
+controls operate both videos. Separate windows allows manual monitor placement;
+Side by side rejoins them. See TEST_CHECKLIST_6.0_BETA1.md for setup and limits.
+
+## Comparison audio and theme — Beta 2
+
+Use Listen to Backup or Listen to Encoded to switch audible sources; Mute Both
+silences playback. One Volume slider applies to either source. Separate meters
+show decoded stereo audio peaks before that volume setting, with Listening/off
+markers. Theme follows saved app settings at launch and can be changed locally
+in the player. See TEST_CHECKLIST_6.0_BETA2.md for meter interpretation and tests.
+
+## Comparison audio indicators — Beta 3
+
+Peak meters have been removed. Indicators in the controls and video windows
+read VLC-reported track, mute, volume and playback state instead of the selected
+button. AUDIO ON means VLC reports a playing, enabled, unmuted track with nonzero
+volume; it does not measure the sound card or speaker output. See the Beta 3 checklist.
+
+## Comparison track menus and mute toggle — Beta 4
+
+Right-click either video or its heading for Audio track and Subtitles menus.
+Subtitles include Off. Choices belong to that file and survive layout changes.
+Selecting audio on the silent file does not make it audible. Use Listen to this
+video to switch sources. Mute Both toggles to a red Unmute Both button; clicking
+again restores the prior source at the current shared volume.
+
+
+### Per-video audio (6.0 beta 9)
+
+Right-click a video in Encoder and open **Audio Streams**. **Use Settings default** inherits your current global setting; other choices affect only that video. Standard choices support multiple selected rows. **Choose audio streams…** lists tracks for a single video. Set choices while the queue is stopped. Overrides last for the current application session, follow renames, and are shown in File Details and the activity log. Subtitle retention is unchanged.
+
+
+## Version 6.0.1
+
+- Removed beta labeling.
+- Temporary inspection failures remain eligible for automatic retry after the initial five retries. Another inspection is queued after 30 seconds, without requiring a new directory event or manual Inspect. Repeated temporary errors remain retryable; cancelling inspection or changing directories stops pending work.
+- Audio Streams shows Custom selection — tracks … with a selection marker. Reopening the dialog retains checked tracks.
+- Rename preserves the original extension in backups for every supported source format. Undo reverses the exact recorded file and backup transaction. Encoder source references preserve the original extension.
+- Existing audio overrides remain session-only and editable while the queue is stopped.
+
+Closed-caption behavior is unchanged; the reported embedded-caption case is still under investigation. Existing incorrectly renamed backups are not automatically repaired.
+
+## Manual checks
+
+1. Copy a large video into the watched folder for longer than one minute. Confirm inspection recovers automatically after the copy finishes.
+2. Choose specific audio tracks, reopen Audio Streams and confirm the custom selection marker and checked tracks.
+3. Encode an MP4 with backups, rename the MKV, then Undo: verify MP4.bak extension, exact filenames, File Details, Play Backup and comparison. Repeat with AVI or MPG.
+4. Confirm cancelling inspection prevents automatic retries, and changing directories does not revive old retry jobs.
+
+
+## Version 6.0.3
+
+- Waiting-file Audio Streams choices can be changed while another file encodes. The active sampling/encoding file is locked; the queue lock protects the transition. A dialog left open cannot change a file after it starts processing.
+- Rename: Whole filename uses Replace as the new base name, disables Find, preserves the extension and retains preview, numbering and collision validation. Reset clears the checkbox.
+- Independent encoder.log, cleaner.log and rename.log in the shared log folder. Each tab has Logging settings with maximum size (default 10 MB), older files to keep (default 5), and Open Log Folder. The existing Cleaner log-folder setting supplies the shared folder. Settings persist in log_settings.json.
+- Encoder logs include command, settings, HandBrake output, verification and commit results. HandBrake failures include a recent-output excerpt and log path in File Details. Rotation can overwrite older job details, so save a log when reporting an issue.
+- Cleaner per-run records now feed its rotating log. Optional JSON output becomes one bounded cleaner-latest.json snapshot (up to the configured size) rather than an unlimited series. Old timestamped Cleaner reports are pruned to the configured history count when a Cleaner run starts. Rotation applies going forward; existing old log files are not resized.
+- HandBrake failures register retained partial output for Play, Compare and Delete. New temporary outputs have a small .job.json ownership record so they can be found after restart. Records are removed on commit, acceptance or deletion.
+- Right-click discovers retained files from new ownership records, including in a separate output folder. Legacy filenames are matched only for an exact, unique source stem in the same folder, with an inactive writer check. Multiple matches appear under Choose retained output; select one and right-click again for actions. Truncated legacy filenames and ambiguous sources require manual handling.
+- In 6.0.5, **Accept Retained Output** requires a record that encoding finished and verification was reached. Review the fresh verification results before accepting. Acceptance preserves the original as a backup.
+- Includes 6.0.2 queue restart fix. Per-video audio overrides remain session-only. Embedded caption behavior is unchanged.
+
+## Build and manual checks
+
+Run build.bat on Windows.
+
+1. While encoding one file, change a waiting file to All Streams, then choose individual tracks. Confirm the active file is locked and the waiting file uses its new policy.
+2. Replace a whole filename, confirm preview/extension, reset, and test duplicate-name rejection.
+3. Check each tab's Logging settings and folder. Trigger a failed job; inspect the error excerpt and encoder.log.
+4. Compare and delete a retained failed output while an unrelated video encodes. Restart and check retained discovery; use Choose retained output for multiple matches.
+5. Confirm an active output cannot be deleted, and an incomplete HandBrake failure cannot be accepted.
+6. Test Stop All / Start with a populated queue.
+
+Native Windows playback and window layout require local validation.

@@ -1,4 +1,7 @@
-# MKV Encoder Q 5.1
+# MKV Encoder Q 6.0.8
+
+Version 6.0.8 adds group dragging and folder moves in the Encoder list.
+See RELEASE_NOTES_6.0.8.md for details.
 
 Created by Jeff Deprey.
 
@@ -6,6 +9,114 @@ MKV Encoder Q 5.1 combines the Encoder, MKV Cleaner, and batch Rename
 applications in one Windows interface. The **Encoder**, **Cleaner**, and **Rename** tabs retain their own input
 folders, Settings buttons, configurations, queues, progress displays, and
 controls.
+
+Default audio policy for this and future releases: All Streams. New configurations
+and configurations missing audio_stream_mode use all. Explicit saved choices
+(including First English) are preserved. Selecting fewer audio streams is opt-in.
+
+Version 6.0.0-beta.5 renames the comparison action to Play Both - Compare.
+It is disabled when the VLC binding or a matching VLC runtime is absent.
+Windows detection checks standard locations, registered custom installations,
+PATH and the portable VLC folder, including DLL architecture and plugins.
+This does not load VLC into the Encoder process. All 413 tests pass.
+
+Version 6.0.0-beta.4 adds per-video right-click Audio track and Subtitles
+menus, including subtitle Off, in the joined and detached comparison views.
+Right-click either video or its heading/filename/status area. Track choices
+are independent for each file. Selecting audio on the silent side does not
+change the shared audible-source selection. Explicit track choices survive
+asynchronous VLC updates and layout reloads.
+
+Mute Both now toggles: it turns red and reads Unmute Both while muted, then
+restores the previously selected source at the shared volume setting. Listen
+to Backup/Encoded still selects that source directly. All 408 automated tests
+pass. See TEST_CHECKLIST_6.0_BETA4.md for Windows/VLC testing.
+
+Version 6.0.0-beta.3 removes Beta 2's experimental PCM peak meters and their
+two extra audio-only decoders. The improved single-source playback selection,
+one shared volume slider, Listen buttons and light/dark themes remain.
+
+Each video now displays VLC-reported audio state in the controls and above its
+video surface, including detached windows: audio track disabled, muted, zero
+volume, paused, unavailable, or AUDIO ON with track ID, volume and playback
+state. The indicator does not simply echo the selected Listen button. It reports
+the player API state, not actual sound measured from the Windows audio device.
+All 400 automated tests pass. See TEST_CHECKLIST_6.0_BETA3.md.
+
+Version 6.0.0-beta.2 updates the comparison player's audio and appearance.
+Source selection disables the unselected audio track, rather than relying on
+VLC's mute flag alone, and is reapplied as audio initializes or playback resets.
+Large Listen to Backup / Listen to Encoded buttons and Mute Both work with one
+shared 0–100% volume slider. Both files have independent decoded-audio peak
+meters, including the unselected file, with a Listening/off marker.
+
+Meters use two silent audio-only VLC decoders with PCM callbacks; those decoders
+never send audio to speakers and add no video decoding. The bars report stereo
+peak dBFS before comparison volume adjustment, not integrated loudness or a
+quality score. They add audio decoding and file-read overhead and can lag around
+seeks; real 4K/NAS playback must be tested. Missing/paused meter data is explicit.
+
+The comparison player inherits the saved app theme on launch and has a local
+light/dark selector. Window surrounds, controls and menus are themed; video
+pixels and Windows-managed title bars are not altered. All Streams remains the
+fresh-configuration audio default; explicit saved encoding choices are preserved.
+All 397 automated tests pass. See TEST_CHECKLIST_6.0_BETA2.md.
+
+Version 6.0.0-beta.1 adds an experimental Compare with Backup action below
+Play Backup. It opens the original .bak and encoded movie directly through
+VLC's playback engine, without Windows file associations. A shared timeline,
+Play/Pause, ±10-second seeks, Resync, backup offset adjustment and audio selector
+control both videos. Separate windows can be dragged to different monitors;
+the Side by side button reunites them. Changing layouts restarts the playback
+surfaces and restores the shared position. No continuous rate correction is used.
+
+The comparison player runs in an isolated process and never modifies either
+movie. Existing encoding/backup behavior is unchanged. This beta uses installed
+VLC 3.x matching the application's architecture (normally 64-bit); portable VLC
+can alternatively live in a VLC subfolder beside the executable. The build
+includes python-vlc bindings, but this source package does not ship VLC itself.
+Encoding does not require VLC. All 388 automated tests pass; real Windows/4K
+playback and HDR appearance require user testing. See TEST_CHECKLIST_6.0_BETA1.md.
+
+Version 5.1.63 adds Play Backup directly below Play Video in the Encoder
+right-click menu. It opens the original backup through the normal Windows
+file association (for example, VLC associated with .bak). It is enabled only
+when the backup exists and is not currently being created by a retained-output
+action. It uses the original source backup even when the completed movie was
+written to a separate output directory. No files are renamed or copied for
+playback. All 378 existing automated tests pass.
+
+Version 5.1.62 fixes two workflow problems found during 5.1.61 testing.
+Inspect File now explicitly retries recorded errors and bypasses cached media
+information. Temporary inspection errors (including copy locks and changing
+files) retry up to five times with cancellable delays of 2, 4, 8, 16 and 30
+seconds. Persistent failures remain visible; retries do not require another
+file to arrive. Files changing during probing are not cached as successful.
+
+Accept Retained Output and Delete Retained Output now work while a different
+file is encoding. Per-file reservations prevent conflicting Encoder claims,
+Cleaner reservations, renames, and backup actions against the same files.
+Manual acceptance uses an independent background task and does not replace
+the Encoder worker or alter its running/cancellation state. Duration-only
+verification, revalidation and original-backup safeguards remain in force.
+
+All 378 automated tests pass. See TEST_CHECKLIST_5.1.62.md for Windows checks.
+
+Version 5.1.61 adds source-identifiable leading-dot temporary filenames,
+Read-only correction for application-created retained files, and failed-row
+right-click actions to Play, Accept, or Delete Retained Output. Acceptance is
+restricted to duration-only verification failures and re-runs all other checks.
+The original is preserved as an exclusive .bak before output commit; existing
+backups and unrelated outputs are never overwritten. Acceptance runs in the
+background and records both durations and their difference in File Details
+and the activity log. The original 5.1.61 Stop requirement is removed in 5.1.62 for unrelated files.
+
+Renaming now preserves full-list order (including filtered and appended rows)
+until an explicit Sort selection. Completed rows show the actual output name
+and folder, with their original source path retained in File Details.
+
+See TEST_CHECKLIST_5.1.61.md for practical Windows checks. All 363 automated
+tests pass. The source package includes build.bat for compiling on Windows.
 
 Version 5.1.60 fixes only the Encoder's --no-backup commit ordering.
 Verified same-path MKV output replaces the original directly. For MP4-to-MKV
@@ -881,3 +992,52 @@ force-stops remaining processes when necessary. Originals remain untouched;
 surviving partial temporary files are retained and reported.
 
 Logs are written to `MKVEncoderQ.log` beside the application.
+
+
+### Per-video audio (6.0 beta 9)
+
+Right-click a video in Encoder and open **Audio Streams**. **Use Settings default** inherits your current global setting; other choices affect only that video. Standard choices support multiple selected rows. **Choose audio streams…** lists tracks for a single video. Set choices while the queue is stopped. Overrides last for the current application session, follow renames, and are shown in File Details and the activity log. Subtitle retention is unchanged.
+
+
+## Version 6.0.1
+
+- Removed beta labeling.
+- Temporary inspection failures remain eligible for automatic retry after the initial five retries. Another inspection is queued after 30 seconds, without requiring a new directory event or manual Inspect. Repeated temporary errors remain retryable; cancelling inspection or changing directories stops pending work.
+- Audio Streams shows Custom selection — tracks … with a selection marker. Reopening the dialog retains checked tracks.
+- Rename preserves the original extension in backups for every supported source format. Undo reverses the exact recorded file and backup transaction. Encoder source references preserve the original extension.
+- Existing audio overrides remain session-only and editable while the queue is stopped.
+
+Closed-caption behavior is unchanged; the reported embedded-caption case is still under investigation. Existing incorrectly renamed backups are not automatically repaired.
+
+## Manual checks
+
+1. Copy a large video into the watched folder for longer than one minute. Confirm inspection recovers automatically after the copy finishes.
+2. Choose specific audio tracks, reopen Audio Streams and confirm the custom selection marker and checked tracks.
+3. Encode an MP4 with backups, rename the MKV, then Undo: verify MP4.bak extension, exact filenames, File Details, Play Backup and comparison. Repeat with AVI or MPG.
+4. Confirm cancelling inspection prevents automatic retries, and changing directories does not revive old retry jobs.
+
+
+## Version 6.0.3
+
+- Waiting-file Audio Streams choices can be changed while another file encodes. The active sampling/encoding file is locked; the queue lock protects the transition. A dialog left open cannot change a file after it starts processing.
+- Rename: Whole filename uses Replace as the new base name, disables Find, preserves the extension and retains preview, numbering and collision validation. Reset clears the checkbox.
+- Independent encoder.log, cleaner.log and rename.log in the shared log folder. Each tab has Logging settings with maximum size (default 10 MB), older files to keep (default 5), and Open Log Folder. The existing Cleaner log-folder setting supplies the shared folder. Settings persist in log_settings.json.
+- Encoder logs include command, settings, HandBrake output, verification and commit results. HandBrake failures include a recent-output excerpt and log path in File Details. Rotation can overwrite older job details, so save a log when reporting an issue.
+- Cleaner per-run records now feed its rotating log. Optional JSON output becomes one bounded cleaner-latest.json snapshot (up to the configured size) rather than an unlimited series. Old timestamped Cleaner reports are pruned to the configured history count when a Cleaner run starts. Rotation applies going forward; existing old log files are not resized.
+- HandBrake failures register retained partial output for Play, Compare and Delete. New temporary outputs have a small .job.json ownership record so they can be found after restart. Records are removed on commit, acceptance or deletion.
+- Right-click discovers retained files from new ownership records, including in a separate output folder. Legacy filenames are matched only for an exact, unique source stem in the same folder, with an inactive writer check. Multiple matches appear under Choose retained output; select one and right-click again for actions. Truncated legacy filenames and ambiguous sources require manual handling.
+- Accept remains restricted to outputs recorded in this session as duration-only verification failures. Recovered partial files cannot be accepted merely because they exist.
+- Includes 6.0.2 queue restart fix. Per-video audio overrides remain session-only. Embedded caption behavior is unchanged.
+
+## Build and manual checks
+
+Run build.bat on Windows.
+
+1. While encoding one file, change a waiting file to All Streams, then choose individual tracks. Confirm the active file is locked and the waiting file uses its new policy.
+2. Replace a whole filename, confirm preview/extension, reset, and test duplicate-name rejection.
+3. Check each tab's Logging settings and folder. Trigger a failed job; inspect the error excerpt and encoder.log.
+4. Compare and delete a retained failed output while an unrelated video encodes. Restart and check retained discovery; use Choose retained output for multiple matches.
+5. Confirm an active output cannot be deleted, and an incomplete HandBrake failure cannot be accepted.
+6. Test Stop All / Start with a populated queue.
+
+Native Windows playback and window layout require local validation.

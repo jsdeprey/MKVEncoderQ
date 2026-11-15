@@ -1,3 +1,3 @@
 """Safe, approval-based video library optimizer."""
 
-__version__ = "5.1.60"
+__version__ = "6.0.8"

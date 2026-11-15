@@ -32,6 +32,7 @@ class Stream:
     dolby_vision_profile: int | None = None
     is_default: bool = False
     language: str = ""
+    title: str = ""
 
 
 @dataclass(frozen=True)

@@ -6,9 +6,9 @@ if errorlevel 1 (
   echo Python launcher "py" was not found.
   exit /b 1
 )
-py -m pip install --upgrade pyinstaller psutil tkinterdnd2
+py -m pip install --upgrade pyinstaller psutil tkinterdnd2 "python-vlc>=3.0,<4"
 if errorlevel 1 exit /b 1
-py -m PyInstaller --noconfirm --clean --onefile --windowed --collect-all tkinterdnd2 --name MKVEncoderQ MKVEncoderQ.py
+py -m PyInstaller --noconfirm --clean --onefile --windowed --collect-all tkinterdnd2 --hidden-import=vlc --name MKVEncoderQ MKVEncoderQ.py
 if errorlevel 1 exit /b 1
 py -m PyInstaller --noconfirm --clean --onefile --name MKVEncoderQ-CLI MKVEncoderQ_CLI.py
 if errorlevel 1 exit /b 1

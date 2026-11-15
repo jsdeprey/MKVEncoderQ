@@ -4,6 +4,8 @@ import logging
 import os
 import queue
 import re
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -16,15 +18,20 @@ from tkinter import filedialog, messagebox, ttk
 from . import __version__
 from .config import Config, application_directory, default_config_path, load_config, save_config
 from .encoder import (BackupAlreadyExists, EncodeCancelled,
-                      EncodeVerificationFailed, encode)
+                      EncodeVerificationFailed, encode, accept_retained_output,
+                      ensure_retained_writable)
 from .drop import expand_dropped_paths
 from .inspection import (InspectionCache, MediaInspection, inspect_media,
                          inspection_from_media, inspection_matches,
-                         inspection_sort_key)
+                         inspection_sort_key, inspect_with_retry, transient_inspection_error)
 from .models import Decision
 from .queueing import LiveQueue
 from .scanner import VIDEO_EXTENSIONS, inspect_for_forced_encode, scan_file
 from .tools import resolve_program
+from .vlc_runtime import comparison_available
+from .tab_logging import write as write_log, settings_dialog, log_directory
+from .retained import discover as discover_retained, remove_record, verification_record
+from .subprocesses import helper_creation_flags
 
 
 # Treeview values retain their stable logical field order.  Only this tuple
@@ -44,6 +51,12 @@ def _display_column_number(name: str) -> str:
 HANDBRAKE_CLI_DOWNLOAD_URL = "https://handbrake.fr/downloads2.php"
 FFMPEG_DOWNLOAD_URL = "https://ffmpeg.org/download.html"
 FAILED_DETAILS_TEXT = "Failed — see File Details"
+
+
+def comparison_command(backup: Path, encoded: Path) -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--compare-videos", str(backup), str(encoded)]
+    return [sys.executable, "-m", "video_optimizer.compare_player", str(backup), str(encoded)]
 
 
 def _filename_text(path: Path, mark_spaces: bool = True,
@@ -468,7 +481,7 @@ def _logical_rename_mapping(
     }
     for source, output in completed_outputs.items():
         if source in displayed_paths and output in renamed_files:
-            logical[source] = renamed_files[output]
+            logical[source] = renamed_files[output].with_suffix(source.suffix)
     return logical
 
 
@@ -698,6 +711,9 @@ class SettingsDialog(tk.Toplevel):
                   wraplength=520).grid(row=3, column=0, columnspan=3, sticky="w",
                                        padx=8, pady=(8, 6))
 
+        logging_tab = self._tab(notebook, "Logging")
+        ttk.Button(logging_tab, text="Logging Settings…", command=lambda: settings_dialog(self, "encoder")).pack(padx=12, pady=12)
+
         buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
         buttons.pack(fill="x")
         ttk.Button(buttons, text="Open JSON (advanced)", command=self._open_json).pack(side="left")
@@ -827,12 +843,16 @@ class OptimizerGUI(tk.Frame):
         self.clean_paths: set[Path] = set()
         self.completed_outputs: dict[Path, Path] = {}
         self.retained_failed_outputs: dict[Path, Path] = {}
+        self.external_cleaning_paths: set[Path] = set()
+        self.manual_acceptance_notes = {}
+        self.retained_action_paths = {}
         self.encode_failure_details: dict[Path, str] = {}
         self.deleted_backups: set[Path] = set()
         self.missing_row_values: dict[Path, list] = {}
         self.file_selection: dict[Path, bool] = {}
         self.dropped_entries: dict[Path, Path] = {}
         self.drag_iid: str | None = None
+        self.drag_rows: list[str] = []
         self.live: LiveQueue | None = None
         self.idle_discovery: threading.Thread | None = None
         self.last_idle_scan_started = 0.0
@@ -887,6 +907,7 @@ class OptimizerGUI(tk.Frame):
         self.mark_filenames_with_spaces = initial_config.mark_filenames_with_spaces
         self.mark_filenames_missing_year_or_episode = (
             initial_config.mark_filenames_missing_year_or_episode)
+        self.audio_overrides = {}
         self.initial_config = initial_config
         self.scan_configured_interval = initial_config.rescan_interval_seconds
         if initial_config.watch_input_directory:
@@ -1040,6 +1061,12 @@ class OptimizerGUI(tk.Frame):
                 lambda _event, sort_changed=(label == "Sort"):
                     self._media_view_option_changed(sort_changed))
             self.filter_widgets.append(widget)
+        self.cleanup_var = tk.BooleanVar(value=False)
+        self._cleanup_visible_paths: set[Path] = set()
+        self.cleanup_check = ttk.Checkbutton(
+            filter_row, text="Cleanup", variable=self.cleanup_var,
+            command=self._media_view_option_changed)
+        self.cleanup_check.pack(side="left")
         self.filter_note_var = tk.StringVar(value="Filters available before Start")
         self.filter_note_label = ttk.Label(
             filter_row, textvariable=self.filter_note_var,
@@ -1110,7 +1137,9 @@ class OptimizerGUI(tk.Frame):
         ttk.Label(detail, textvariable=self.projection_var).pack(anchor="w", pady=(2, 0))
         self.progress = LabeledProgress(detail)
         self.progress.pack(fill="x", pady=(8, 8))
-        self.log = tk.Text(detail, height=7, wrap="word", state="disabled")
+        log_frame = ttk.LabelFrame(detail, text="Activity Log", padding=8)
+        log_frame.pack(fill="both", expand=True)
+        self.log = tk.Text(log_frame, height=7, wrap="word", state="disabled")
         self.log.pack(fill="both", expand=True)
         self.status_var = tk.StringVar(value="Stopped")
         ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w").pack(fill="x", side="bottom")
@@ -1330,6 +1359,8 @@ class OptimizerGUI(tk.Frame):
     def _set_filter_lock_state(self, locked: bool) -> None:
         for widget in self.filter_widgets:
             widget.configure(state="disabled" if locked else "readonly")
+        if hasattr(self, "cleanup_check"):
+            self.cleanup_check.configure(state="disabled" if locked else "normal")
         self.filter_note_var.set(
             "🔒 Filters locked during processing"
             if locked else "Filters available before Start")
@@ -1412,7 +1443,7 @@ class OptimizerGUI(tk.Frame):
             except (OSError, ValueError) as exc:
                 self._log(f"Could not save the Clean After Encode setting: {exc}")
 
-    def queue_inspection(self, paths) -> int:
+    def queue_inspection(self, paths, force: bool = False) -> int:
         """Queue uncached media inspections without blocking the interface."""
         cycle_was_active = getattr(self, "inspection_cycle_active", False)
         queued = 0
@@ -1423,11 +1454,17 @@ class OptimizerGUI(tk.Frame):
             # thousands of inspection jobs are prepared.
             if self.live is None or path not in self.live.items:
                 path = path.resolve()
-            if path in self.inspection_results or path in self.inspection_errors:
+            if path in getattr(self, "retained_action_paths", {}):
+                continue
+            if not force and (path in self.inspection_results or path in self.inspection_errors):
                 continue
             with self.inspection_lock:
                 if path in self.inspection_enqueued:
                     continue
+                if force:
+                    self.inspection_results.pop(path, None)
+                    self.inspection_errors.pop(path, None)
+                    self.inspection_cache.discard(path)
                 self.inspection_enqueued.add(path)
                 self.inspection_total += 1
             self.inspection_queue.put(path)
@@ -1479,8 +1516,17 @@ class OptimizerGUI(tk.Frame):
                 if result is None:
                     if not ffprobe:
                         raise RuntimeError("ffprobe was not found")
-                    result = inspect_media(path, ffprobe)
-                    self.inspection_cache.put(result, persist=False)
+                    result = inspect_with_retry(
+                        path, ffprobe, self.inspection_cancel, inspect=inspect_media,
+                        on_retry=lambda attempt, delay, error: self._emit(
+                            "log", f"Inspection retry {attempt}/5 in {delay}s: {path.name} — {error}"))
+                    if result is not None:
+                        self.inspection_cache.put(result, persist=False)
+                    elif self.inspection_cancel.is_set():
+                        with self.inspection_lock:
+                            self.inspection_active_path = None
+                            self.inspection_queue.put(path)
+                        break
             except Exception as exc:
                 error = str(exc)
             with self.inspection_lock:
@@ -1507,6 +1553,20 @@ class OptimizerGUI(tk.Frame):
                         break
                     self.inspection_enqueued.discard(path)
         self._emit("inspection_finished", cancelled)
+
+    def _retry_deferred_inspection(self, path, generation):
+        if generation != getattr(self, "inspection_generation", 0):
+            return
+        error = self.inspection_errors.get(path)
+        if not error or not transient_inspection_error(error) or self.inspection_cancel.is_set():
+            return
+        if not self.inspect_new_files:
+            self.after(30000, lambda: self._retry_deferred_inspection(path, generation))
+            return
+        if not self.table.exists(str(path)) or path in self.inspection_enqueued:
+            return
+        self._log(f"Retrying temporary inspection failure: {path.name}")
+        self.queue_inspection([path], force=True)
 
     def cancel_inspection(self) -> None:
         self.inspection_cancel.set()
@@ -1630,6 +1690,12 @@ class OptimizerGUI(tk.Frame):
 
     def _path_matches_active_filter(self, path: Path) -> bool:
         """Return whether one inventory record belongs in the active view."""
+        if OptimizerGUI._cleanup_enabled(self):
+            if getattr(self, "directory_discovery_active", False):
+                # Inventory completion refreshes all rows using shared folder
+                # listings. Keep existing marks while that scan is in flight.
+                return path in getattr(self, "_cleanup_visible_paths", ())
+            return OptimizerGUI._refresh_cleanup_row(self, path)
         codec_filter = self.codec_filter_var.get()
         resolution_filter = self.resolution_filter_var.get()
         rating_filter = self.rating_filter_var.get()
@@ -1639,13 +1705,100 @@ class OptimizerGUI(tk.Frame):
         return result is not None and inspection_matches(
             result, codec_filter, resolution_filter, rating_filter)
 
+    def _cleanup_enabled(self) -> bool:
+        toggle = getattr(self, "cleanup_var", None)
+        return toggle is not None and toggle.get()
+
+    def _existing_backup(self, source: Path, config: Config,
+                         folder_backups: dict | None = None) -> Path | None:
+        exact = _backup_path(source, config.backup_suffix)
+        if folder_backups is None and (exact.is_file() or source.suffix.lower() != ".mkv"):
+            return exact
+        # An in-place conversion leaves e.g. Movie.mp4.bak beside Movie.mkv.
+        # A still-present source or several matching backups make ownership unclear.
+        folder = source.parent
+        if folder_backups is None or folder not in folder_backups:
+            by_stem = {}
+            try:
+                for candidate in folder.iterdir():
+                    if not candidate.name.lower().endswith(config.backup_suffix.lower()):
+                        continue
+                    original = candidate.with_name(candidate.name[:-len(config.backup_suffix)])
+                    if original.suffix.lower() in VIDEO_EXTENSIONS:
+                        by_stem.setdefault(original.stem.casefold(), []).append((candidate, original))
+            except OSError:
+                pass
+            if folder_backups is not None:
+                folder_backups[folder] = by_stem
+        else:
+            by_stem = folder_backups[folder]
+        siblings = by_stem.get(source.stem.casefold(), ())
+        if any(backup == exact for backup, _ in siblings):
+            return exact
+        if source.suffix.lower() != ".mkv":
+            return None if folder_backups is not None else exact
+        matches = [backup for backup, original in siblings
+                   if backup.is_file() and not original.exists()]
+        return matches[0] if len(matches) == 1 else (None if folder_backups is not None else exact)
+
+    def _retained_candidates(self, source: Path, config: Config,
+                             folder_candidates: dict | None = None) -> list[Path]:
+        if OptimizerGUI._retained_path_busy(self, source):
+            return []
+        folders = [source.parent]
+        if config.output_directory.strip():
+            output_root = Path(config.output_directory)
+            if not output_root.is_absolute():
+                output_root = default_config_path().parent / output_root
+            try:
+                root = Path(self.input_var.get()).resolve()
+                folders.append(output_root / source.relative_to(root).parent)
+            except ValueError:
+                pass
+        candidates = discover_retained(source, folders, folder_candidates)
+        known = self.retained_failed_outputs.get(source)
+        if known is not None and known.is_file() and known not in candidates:
+            candidates.append(known)
+        return candidates
+
+    def _refresh_cleanup_row(self, path: Path) -> bool:
+        config = getattr(self, "_cleanup_config", None) or self.run_config or load_config(None)
+        status = str(self.table.set(str(path), "status"))
+        displayed = self.completed_outputs.get(path, path)
+        backup = False
+        retained = []
+        if status not in {"Missing", "Sampling", "Encoding", "Paused"}:
+            backup_path = self._existing_backup(
+                path, config, getattr(self, "_cleanup_folder_backups", None))
+            backup = backup_path is not None and backup_path.is_file()
+            retained = self._retained_candidates(
+                path, config, getattr(self, "_cleanup_folder_candidates", None))
+        label = self._marked_filename(displayed)
+        if retained:
+            verified_failure = any(verification_record(path, output) for output in retained)
+            retained_label = ("Failed encode retained" if verified_failure
+                              else "Unverified retained output")
+            label = f"[{retained_label}] {label}"
+        self.table.set(str(path), "file", label)
+        if backup:
+            self.table.set(str(path), "backup", "[ Present ]")
+        elif str(self.table.set(str(path), "backup")) == "[ Present ]":
+            self.table.set(str(path), "backup", "—")
+        visible = backup or bool(retained)
+        if visible:
+            self._cleanup_visible_paths.add(path)
+        else:
+            self._cleanup_visible_paths.discard(path)
+        return visible
+
     def _set_path_filter_visibility(self, path: Path, visible: bool,
                                     reattach_at_end: bool = True) -> None:
         """Apply one view transition without changing inventory ownership."""
         path = Path(path)
         iid = str(path)
         item = self.live.items.get(path) if self.live is not None else None
-        if item is not None and _can_select(item.status):
+        if (item is not None and _can_select(item.status)
+                and not OptimizerGUI._cleanup_enabled(self)):
             if not visible and item.selected:
                 self.live.set_selected(path, False)
                 self.file_selection[path] = False
@@ -1669,30 +1822,43 @@ class OptimizerGUI(tk.Frame):
             self.table.detach(iid)
             self.filtered_rows.add(iid)
 
-    def apply_media_view(self) -> None:
+    def apply_media_view(self, preserve_order: bool = False) -> None:
         """Filter the inventory and keep hidden rows out of processing."""
         rows = self._all_table_rows()
-        if not getattr(self, "manual_order_active", False):
+        if not preserve_order and not getattr(self, "manual_order_active", False):
             sort_mode = self.sort_mode_var.get()
             rows.sort(key=lambda iid: inspection_sort_key(
                 self.inspection_results.get(Path(iid)), sort_mode,
                 Path(iid).name))
         self.filter_order = rows
         self.filtered_rows.clear()
-        for iid in rows:
-            path = Path(iid)
-            visible = OptimizerGUI._path_matches_active_filter(self, path)
-            self.table.move(iid, "", "end")
-            OptimizerGUI._set_path_filter_visibility(
-                self, path, visible, reattach_at_end=False)
+        cleanup = OptimizerGUI._cleanup_enabled(self)
+        if cleanup:
+            self._cleanup_config = getattr(self, "run_config", None) or load_config(None)
+            self._cleanup_folder_backups = {}
+            self._cleanup_folder_candidates = {}
+        try:
+            for iid in rows:
+                path = Path(iid)
+                visible = OptimizerGUI._path_matches_active_filter(self, path)
+                self.table.move(iid, "", "end")
+                OptimizerGUI._set_path_filter_visibility(
+                    self, path, visible, reattach_at_end=False)
+        finally:
+            if cleanup:
+                del self._cleanup_config, self._cleanup_folder_backups, self._cleanup_folder_candidates
         self._refresh_encode_all_heading()
         self._refresh_force_all_heading()
 
     def _media_view_option_changed(self, sort_changed: bool = False) -> None:
         """Apply filters without discarding a deliberate handle order."""
+        cleanup = OptimizerGUI._cleanup_enabled(self)
+        if getattr(self, "cleanup_view_was_active", False) and not cleanup:
+            self._refresh_filename_markers()
+        self.cleanup_view_was_active = cleanup
         if sort_changed:
             self.manual_order_active = False
-        self.apply_media_view()
+        self.apply_media_view(preserve_order=not sort_changed)
 
     def _apply_filter_to_path(self, path: Path,
                               refresh_headings: bool = True) -> bool:
@@ -1959,6 +2125,8 @@ class OptimizerGUI(tk.Frame):
                 pending.queue.clear()
 
     def _reset_directory_session(self) -> None:
+        if getattr(self, "retained_action_paths", {}):
+            raise RuntimeError("Wait for retained-output actions before changing input directories")
         """Reset all state owned by the previous input-directory session.
 
         Application preferences, filters, the activity log, inspection cache,
@@ -1995,6 +2163,7 @@ class OptimizerGUI(tk.Frame):
                 "clean_paths", "queued_reanalysis", "queued_force",
                 "sample_variants", "progressive_samples", "progressive_targets",
                 "retained_failed_outputs", "encode_failure_details",
+                "manual_acceptance_notes",
                 "deleted_backups", "dropped_entries", "inspection_results",
                 "inspection_errors", "inspection_enqueued", "inspection_batch",
                 "reanalyze_preserve"):
@@ -2009,6 +2178,7 @@ class OptimizerGUI(tk.Frame):
 
         self.reanalyze_target = None
         self.drag_iid = None
+        self.drag_rows = []
         self.manual_order_active = False
         self.start_pending = False
         self.last_file_completed = False
@@ -2101,12 +2271,13 @@ class OptimizerGUI(tk.Frame):
                 0 if root_changed else getattr(self, "directory_discovered_count", 0))
             if (self.live is None or self.live.root != root
                     or self.live.excluded_root != excluded
-                    or self.live.allowed_paths is not None):
+                    ):
                 previous = self.live
                 if previous is None or previous.root != root:
                     OptimizerGUI._reset_directory_session(self)
                 self.live = LiveQueue(root, config.file_ready_seconds, excluded,
                                       default_selected=config.select_new_files_for_encoding)
+                self.live.cleaning_reserved.update(getattr(self, "external_cleaning_paths", ()))
                 self.live.add_manual(list(getattr(self, "dropped_entries", {}).items()))
                 if previous is not None and previous.root == root:
                     self.live.completed.update(previous.completed)
@@ -2124,6 +2295,7 @@ class OptimizerGUI(tk.Frame):
                             except (OSError, ValueError):
                                 continue
             live = self.live
+            live.set_allowed_paths(None)
             live.ready_seconds = config.file_ready_seconds
         except Exception as exc:
             if hasattr(self, "inventory_status_var"):
@@ -2270,6 +2442,7 @@ class OptimizerGUI(tk.Frame):
                 self.live = LiveQueue(
                     root, config.file_ready_seconds, excluded,
                     default_selected=config.select_new_files_for_encoding)
+                self.live.cleaning_reserved.update(getattr(self, "external_cleaning_paths", ()))
             normalized: list[tuple[Path, Path]] = []
             for path, dropped_root in entries:
                 source_root = root if path.is_relative_to(root) else dropped_root
@@ -2340,26 +2513,47 @@ class OptimizerGUI(tk.Frame):
             draggable = len(values) > 3 and _can_reorder(str(values[3]))
         self.table.configure(cursor="fleur" if draggable else "hand2" if clickable else "")
 
-    def _table_press(self, event) -> None:
+    def _table_press(self, event) -> str | None:
         self.drag_iid = None
-        if self.table.identify_column(event.x) != "#1":
+        self.drag_rows = []
+        # Leave Shift and Ctrl clicks to the Treeview selection bindings.
+        if self.table.identify_column(event.x) != "#1" or event.state & 0x0005:
             return
         iid = self.table.identify_row(event.y)
-        if iid:
-            values = self.table.item(iid, "values")
-            if len(values) > 3 and _can_reorder(str(values[3])):
-                self.drag_iid = iid
+        if not iid or not _can_reorder(str(self.table.set(iid, "status"))):
+            return
+        selected = set(self.table.selection())
+        if iid in selected:
+            visible = list(self.table.get_children())
+            group = [row for row in visible if row in selected]
+            start = visible.index(group[0])
+            if group != visible[start:start + len(group)] or any(
+                    not _can_reorder(str(self.table.set(row, "status"))) for row in group):
+                return "break"
+        else:
+            group = [iid]
+            self.table.selection_set(iid)
+        self.table.focus(iid)
+        self.drag_iid = iid
+        self.drag_rows = group
+        return "break"
 
     def _table_drag(self, event) -> None:
         if not self.drag_iid:
             return
         target = self.table.identify_row(event.y)
-        if not target or target == self.drag_iid:
+        if not target or target in self.drag_rows:
             return
-        target_values = self.table.item(target, "values")
-        if len(target_values) <= 3 or not _can_reorder(str(target_values[3])):
+        if not _can_reorder(str(self.table.set(target, "status"))) or any(
+                not self.table.exists(row)
+                or not _can_reorder(str(self.table.set(row, "status")))
+                for row in self.drag_rows):
             return
-        self.table.move(self.drag_iid, "", self.table.index(target))
+        index = self.table.index(target)
+        downward = index > self.table.index(self.drag_rows[0])
+        rows = self.drag_rows if downward else reversed(self.drag_rows)
+        for row in rows:
+            self.table.move(row, "", index)
 
     def _sync_queue_order(self, manual: bool = False) -> None:
         if manual:
@@ -2407,6 +2601,7 @@ class OptimizerGUI(tk.Frame):
         if self.drag_iid is not None:
             self._sync_queue_order(manual=True)
             self.drag_iid = None
+            self.drag_rows = []
             return
         iid = self.table.identify_row(event.y)
         if column == _display_column_number("selected") and iid:
@@ -2490,6 +2685,72 @@ class OptimizerGUI(tk.Frame):
             label="Play Video",
             command=lambda target=play_path: self._play_video(target),
             state="normal" if play_path is not None else "disabled")
+        config = getattr(self, "run_config", None) or load_config(None)
+        backup_path = self._existing_backup(path, config)
+        backup_busy = any(backup_path in paths for paths in
+                          getattr(self, "retained_action_paths", {}).values())
+        menu.add_command(
+            label="Play Backup",
+            command=lambda target=backup_path: self._play_video(target),
+            state="normal" if backup_path.is_file() and not backup_busy else "disabled")
+        retained_candidates = self._retained_candidates(path, config)
+        if len(retained_candidates) == 1:
+            self.retained_failed_outputs[path] = retained_candidates[0]
+        retained = self.retained_failed_outputs.get(path)
+        if retained not in retained_candidates:
+            retained = None
+        failed_comparison = retained is not None
+        compare_original = path if failed_comparison and path.is_file() else backup_path
+        compare_encoded = retained if failed_comparison else play_path
+        compare_busy = (OptimizerGUI._retained_path_busy(self, path)
+                        if failed_comparison else backup_busy)
+        menu.add_command(
+            label="Play Both - Compare",
+            command=lambda original=compare_original, encoded=compare_encoded:
+                self._compare_with_backup(original, encoded),
+            state="normal" if (compare_encoded is not None
+                                and compare_original.is_file() and compare_encoded.is_file()
+                                and not compare_busy and comparison_available()) else "disabled")
+        if retained is not None:
+            available = retained.is_file()
+            busy = OptimizerGUI._retained_path_busy(self, path)
+            menu.add_command(label="Play Retained Output",
+                             command=lambda: self._play_video(retained),
+                             state="normal" if available else "disabled")
+            menu.add_command(label="Accept Retained Output...",
+                             command=lambda: self._accept_retained(path),
+                             state="normal" if available and not busy and verification_record(path, retained) is not None else "disabled")
+            menu.add_command(label="Delete Retained Output...",
+                             command=lambda: self._delete_retained(path),
+                             state="normal" if available and not busy else "disabled")
+        if len(retained_candidates) > 1:
+            retained_menu = tk.Menu(menu, tearoff=False)
+            for candidate in retained_candidates:
+                retained_menu.add_command(label=candidate.name,
+                    command=lambda file=candidate: self._select_retained_candidate(path, file))
+            menu.add_cascade(label="Choose retained output…", menu=retained_menu)
+        audio_menu = tk.Menu(menu, tearoff=False)
+        audio_paths = [item_path for _row, item_path, _values in selected_data]
+        default_mode = load_config(None).audio_stream_mode
+        override = self.audio_overrides.get(path)
+        choice = tk.StringVar(value=override or "settings")
+        self.audio_menu_choice = choice
+        for label, mode in ((f"Use Settings default — {default_mode.replace('_', ' ').title()}", "settings"),
+                            ("Keep all audio streams", "all"),
+                            ("First English only", "first_english"),
+                            ("First audio stream only", "first"),
+                            ("Default audio stream only", "default")):
+            audio_menu.add_radiobutton(label=label, value=mode, variable=choice,
+                command=lambda value=mode, paths=audio_paths: self._set_audio_override(paths, value),
+                state="normal" if all(self._audio_editable(p) for p in audio_paths) else "disabled")
+        audio_menu.add_separator()
+        custom = override if override and override.startswith("tracks:") else "custom"
+        custom_label = ("Custom selection — tracks " + override[7:].replace(",", ", ")
+                        if override and override.startswith("tracks:") else "Choose audio streams…")
+        audio_menu.add_radiobutton(label=custom_label, value=custom, variable=choice,
+                               command=lambda: self._choose_audio_streams(path),
+                               state="normal" if len(audio_paths) == 1 and self._audio_editable(path) else "disabled")
+        menu.add_cascade(label="Audio Streams", menu=audio_menu)
         menu.add_separator()
         reanalyzable = [(row, item_path) for row, item_path, item_values in selected_data
                         if _can_reanalyze(str(item_values[3]), self.running)]
@@ -2544,7 +2805,7 @@ class OptimizerGUI(tk.Frame):
             label=("Inspect File" if len(selected_data) <= 1
                    else f"Inspect {len(selected_data)} Selected Files"),
             command=lambda paths=[item_path for _row, item_path, _values in selected_data]:
-                self.queue_inspection(paths))
+                self.queue_inspection(paths, force=True))
         menu.add_separator()
         menu.add_command(label="Select All Rows", command=self._select_all_rows)
         menu.add_command(label="Clear Row Selection", command=self._clear_row_selection)
@@ -2560,6 +2821,13 @@ class OptimizerGUI(tk.Frame):
                 command=lambda where=destination, rows=movable_rows:
                     self._move_rows(rows, where),
                 state="normal" if movable else "disabled")
+        folder = Path(values[11])
+        for label, destination in (("Move Folder to Top", "top"),
+                                   ("Move Folder to Bottom", "bottom")):
+            menu.add_command(
+                label=label,
+                command=lambda where=destination: self._move_folder_rows(folder, where),
+                state="normal" if _can_reorder(status) else "disabled")
         menu.add_separator()
         rename_paths = [self._rename_target(Path(row).resolve())
                         for row in selected_rows]
@@ -2585,16 +2853,16 @@ class OptimizerGUI(tk.Frame):
             state="normal" if all(
                 str(self.table.set(row, "status")) not in {"Sampling", "Encoding", "Paused"}
                 for row in selected_rows) else "disabled")
-        if status == "Completed":
-            config = getattr(self, "run_config", None) or load_config(None)
-            backup = _backup_path(path, config.backup_suffix)
+        if status == "Completed" or OptimizerGUI._cleanup_enabled(self):
             selected_backups = []
             seen_backups: set[Path] = set()
             for _row, selected_path, selected_values in selected_data:
-                if str(selected_values[3]) != "Completed":
+                if (str(selected_values[3]) != "Completed"
+                        and not OptimizerGUI._cleanup_enabled(self)):
                     continue
-                selected_backup = _backup_path(
-                    selected_path, config.backup_suffix)
+                if OptimizerGUI._retained_path_busy(self, selected_path):
+                    continue
+                selected_backup = self._existing_backup(selected_path, config)
                 if (selected_backup not in seen_backups
                         and selected_backup.is_file()):
                     selected_backups.append((selected_backup, selected_path))
@@ -2603,7 +2871,8 @@ class OptimizerGUI(tk.Frame):
             menu.add_command(
                 label="Revert to Backup...",
                 command=lambda: self._revert_to_backup(path),
-                state="normal" if backup.is_file() else "disabled")
+                state="normal" if status == "Completed" and _backup_path(
+                    path, config.backup_suffix).is_file() else "disabled")
             menu.add_command(
                 label=("Delete Backup File..." if len(selected_backups) <= 1
                        else f"Delete {len(selected_backups)} Backup Files..."),
@@ -2627,6 +2896,19 @@ class OptimizerGUI(tk.Frame):
         current = list(self.table.get_children())
         order = _moved_row_order(current, rows, destination)
         for index, row in enumerate(order):
+            self.table.move(row, "", index)
+        self._sync_queue_order(manual=True)
+
+    def _move_folder_rows(self, folder: Path, destination: str) -> None:
+        current = self._all_table_rows()
+        rows = [row for row in current if Path(row).parent == folder
+                and _can_reorder(str(self.table.set(row, "status")))]
+        order = _moved_row_order(current, rows, destination)
+        if order == current:
+            return
+        visible = set(self.table.get_children())
+        self.filter_order = order
+        for index, row in enumerate(row for row in order if row in visible):
             self.table.move(row, "", index)
         self._sync_queue_order(manual=True)
 
@@ -2736,6 +3018,91 @@ class OptimizerGUI(tk.Frame):
         except OSError as exc:
             messagebox.showerror("Cannot play video", str(exc), parent=self)
 
+    def _select_retained_candidate(self, source, retained):
+        if OptimizerGUI._retained_path_busy(self, source):
+            return
+        self.retained_failed_outputs[source] = retained
+        self._log(f"Selected retained output: {retained}. Right-click again to see the available actions.")
+
+    def _audio_editable(self, path):
+        live = getattr(self, "live", None)
+        if live is None:
+            return not self.running
+        with live._lock:
+            item = live.items.get(path)
+            return (not OptimizerGUI._retained_path_busy(self, path)
+                    and (not self.running or (item is not None and item.status in {
+                        "Waiting", "Checking file...", "Waiting to scan", "Queued", "Excluded"})))
+
+    def _set_audio_override(self, paths, mode):
+        live = getattr(self, "live", None)
+        from contextlib import nullcontext
+        with live._lock if live is not None else nullcontext():
+            for path in paths:
+                if not OptimizerGUI._audio_editable(self, path):
+                    continue
+                if mode == "settings":
+                    self.audio_overrides.pop(path, None)
+                else:
+                    self.audio_overrides[path] = mode
+                self.progressive_samples.pop(path, None)
+                self._log(f"Audio selection: {path.name} — {mode}")
+
+    def _choose_audio_streams(self, path):
+        if not self._audio_editable(path):
+            return
+        try:
+            from .probe import probe
+            from .encoder import selected_audio
+            config = load_config(None)
+            program = resolve_program(config.ffprobe)
+            if not program:
+                raise RuntimeError("ffprobe was not found")
+            media = probe(path, program, timeout=20)
+            mode = self.audio_overrides.get(path, config.audio_stream_mode)
+            selected = selected_audio(media, mode)
+        except Exception as exc:
+            messagebox.showerror("Audio Streams", str(exc), parent=self)
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Choose audio streams — {path.name}")
+        dialog.transient(self.winfo_toplevel())
+        variables = []
+        ttk.Label(dialog, text="Keep the checked audio streams:", padding=10).pack(anchor="w")
+        for index, stream in enumerate(media.audios, 1):
+            variable = tk.BooleanVar(value=stream in selected)
+            variables.append(variable)
+            text = (f"{index}: {stream.language or 'Unknown language'} • {stream.codec_name} "
+                    f"{stream.profile} • {stream.channels} channels • {stream.title}" + (" • Default" if stream.is_default else ""))
+            ttk.Checkbutton(dialog, text=text, variable=variable).pack(anchor="w", padx=12, pady=3)
+        def save():
+            if not self._audio_editable(path):
+                messagebox.showinfo("Audio Streams", "This file has started processing; its audio selection is now locked.", parent=dialog)
+                return
+            indices = [str(i) for i, variable in enumerate(variables, 1) if variable.get()]
+            if not indices:
+                messagebox.showinfo("Audio Streams", "Keep at least one audio stream.", parent=dialog)
+                return
+            self._set_audio_override([path], "tracks:" + ",".join(indices))
+            dialog.destroy()
+        ttk.Button(dialog, text="Apply", command=save).pack(side="right", padx=10, pady=10)
+        ttk.Button(dialog, text="Cancel", command=dialog.destroy).pack(side="right", padx=5, pady=10)
+        dialog.grab_set()
+
+    def _compare_with_backup(self, backup: Path, encoded: Path | None) -> None:
+        if encoded is None:
+            return
+        try:
+            if not backup.is_file() or not encoded.is_file():
+                raise FileNotFoundError("The original or encoded video no longer exists")
+            command = comparison_command(backup, encoded)
+            # Keep LibVLC and its native windows outside the encoding process.
+            subprocess.Popen(command, cwd=str(application_directory()),
+                             creationflags=helper_creation_flags())
+            self._log(f"Opened comparison: {backup} / {encoded}")
+        except OSError as exc:
+            messagebox.showerror("Cannot compare videos", str(exc), parent=self)
+
     def _rename_target(self, source: Path) -> Path:
         """Return the actual file represented by an Encoder row."""
         return self.completed_outputs.get(source.resolve(), source.resolve())
@@ -2771,6 +3138,10 @@ class OptimizerGUI(tk.Frame):
         # These paths already came from the Encoder/Rename queues. Keep this
         # in-memory operation off the NAS: this method also updates lists with
         # thousands of entries and used to resolve every one on Tk's thread.
+        self.filter_order = OptimizerGUI._all_table_rows(self)
+        # Preserve this inventory order through later inspection/filter
+        # refreshes too. Only an explicit Sort choice clears this flag.
+        self.manual_order_active = True
         resolved = {Path(old): Path(new) for old, new in mapping.items()}
         displayed_paths = {
             path for path in {*resolved, *self.completed_outputs}
@@ -2793,7 +3164,8 @@ class OptimizerGUI(tk.Frame):
                 "file_selection", "sample_variants", "progressive_samples",
                 "progressive_targets",
                 "queued_reanalysis", "queued_force", "missing_row_values",
-                "retained_failed_outputs", "encode_failure_details"):
+                "retained_failed_outputs", "encode_failure_details",
+                "manual_acceptance_notes", "audio_overrides"):
             values = getattr(self, attribute, {})
             setattr(self, attribute, {
                 source_mapping.get(path, path): value
@@ -2861,6 +3233,8 @@ class OptimizerGUI(tk.Frame):
         drag_iid = getattr(self, "drag_iid", None)
         if drag_iid is not None:
             self.drag_iid = str(source_mapping.get(Path(drag_iid), Path(drag_iid)))
+            self.drag_rows = [str(source_mapping.get(Path(row), Path(row)))
+                              for row in getattr(self, "drag_rows", ())]
         for old, new in source_mapping.items():
             self.inspection_cache.rename(old, new)
         self.filter_order = [str(source_mapping.get(Path(iid), Path(iid)))
@@ -2897,7 +3271,7 @@ class OptimizerGUI(tk.Frame):
         # outside the active filter.
         apply_view = getattr(self, "apply_media_view", None)
         if callable(apply_view):
-            apply_view()
+            apply_view(preserve_order=True)
         self._refresh_force_all_heading()
         self._refresh_encode_all_heading()
         self._refresh_clean_all_heading()
@@ -2913,7 +3287,7 @@ class OptimizerGUI(tk.Frame):
         path = path.resolve()
         fields = (
             ("File name", values[2]), ("Path", values[11]),
-            ("Full path", path), ("Status", values[3]),
+            ("Full path", self.completed_outputs.get(path, path)), ("Status", values[3]),
             ("Progress", values[4]), ("Current file size", values[6]),
             ("Projected output", values[7]),
             ("Projected savings", values[5]),
@@ -2924,9 +3298,15 @@ class OptimizerGUI(tk.Frame):
              "Yes" if str(values[10]) == _encode_text(True) else "No"),
         )
         lines = [f"{label}: {value}" for label, value in fields]
+        lines.append(f"Encoder log: {log_directory() / 'encoder.log'}")
+        mode = getattr(self, "audio_overrides", {}).get(path)
+        lines.append(f"Audio selection: {mode if mode else 'Use Settings default'}")
         output = self.completed_outputs.get(path)
         if output is not None:
-            lines.extend(("", "Completed output:", f"  {output}"))
+            lines.extend(("", f"Original source: {path}", "Completed output:", f"  {output}"))
+        note = getattr(self, "manual_acceptance_notes", {}).get(path)
+        if note:
+            lines.extend(("", note))
         failure = self.encode_failure_details.get(path)
         retained = self.retained_failed_outputs.get(path)
         if failure or retained is not None:
@@ -2998,7 +3378,120 @@ class OptimizerGUI(tk.Frame):
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
         dialog.focus_set()
 
+    def _retained_path_busy(self, source: Path) -> bool:
+        if any(source in paths for paths in getattr(self, "retained_action_paths", {}).values()):
+            return True
+        live = getattr(self, "live", None)
+        if live is not None:
+            item = live.items.get(source)
+            if item is not None and item.status in {"Sampling", "Encoding", "Paused"}:
+                return True
+        return getattr(self, "inspection_active_path", None) == source
+
+    def _reserve_retained_action(self, source: Path, retained: Path, output: Path | None = None,
+                                 config: Config | None = None):
+        if OptimizerGUI._retained_path_busy(self, source):
+            return None
+        paths = {source, retained}
+        if output is not None:
+            paths.add(output)
+        if config is not None:
+            paths.add(_backup_path(source, config.backup_suffix))
+        if paths & getattr(self, "external_cleaning_paths", set()):
+            return None
+        if any(paths & other for other in self.retained_action_paths.values()):
+            return None
+        live = self.live
+        if live is not None and not live.reserve_retained(paths):
+            return None
+        self.retained_action_paths[source] = paths
+        return live, paths
+
+    def _delete_retained(self, source: Path) -> None:
+        retained = self.retained_failed_outputs.get(source)
+        if retained is None or OptimizerGUI._retained_path_busy(self, source):
+            return
+        if not messagebox.askyesno("Delete retained output",
+                f"Delete only this retained encode? The original movie will be kept.\n\n{retained}", parent=self):
+            return
+        reservation = self._reserve_retained_action(source, retained)
+        if reservation is None:
+            return
+        live, paths = reservation
+        try:
+            if retained.resolve() in {source.resolve(), self.completed_outputs.get(source)}:
+                raise ValueError("Refusing to delete an original or completed movie")
+            ensure_retained_writable(retained)
+            retained.unlink()
+            remove_record(retained)
+        except Exception as exc:
+            messagebox.showerror("Could not delete retained output", str(exc), parent=self)
+            return
+        finally:
+            if live is not None:
+                live.release_retained(paths)
+            self.retained_action_paths.pop(source, None)
+        self.retained_failed_outputs.pop(source, None)
+        self._log(f"Deleted retained output: {retained}; original untouched")
+        if OptimizerGUI._cleanup_enabled(self):
+            self._apply_filter_to_path(source)
+
+    def _accept_retained(self, source: Path) -> None:
+        retained = self.retained_failed_outputs.get(source)
+        if retained is None or OptimizerGUI._retained_path_busy(self, source):
+            return
+        marker = verification_record(source, retained)
+        if marker is None:
+            return
+        try:
+            if marker.get("verification_failed"):
+                settings = dict(marker["config"])
+                settings["audio_passthrough_codecs"] = tuple(settings["audio_passthrough_codecs"])
+                config = Config(**settings)
+                output = Path(marker["final_output"])
+            else:
+                # Older records did not store encode settings.
+                config = load_config(None)
+                config = replace(config, audio_stream_mode=self.audio_overrides.get(
+                    source, config.audio_stream_mode))
+                output = retained.parent / source.with_suffix(".mkv").name
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            messagebox.showerror("Could not read retained encode settings", str(exc), parent=self)
+            return
+        reservation = self._reserve_retained_action(source, retained, output, config)
+        if reservation is None:
+            return
+        live, paths = reservation
+        self._log(f"Verifying retained output: {source.name}")
+
+        def confirm(review):
+            answered = threading.Event()
+            answer = []
+            self._emit("retained_accept_review", retained, review, answered, answer)
+            answered.wait()
+            return bool(answer and answer[0])
+
+        def work():
+            try:
+                probe_program = resolve_program(config.ffprobe)
+                if not probe_program:
+                    raise RuntimeError("ffprobe was not found")
+                result = accept_retained_output(source, retained, output, config,
+                                                probe_program, confirm=confirm)
+                if result is None:
+                    self._emit("retained_accept_cancelled", source, live, paths)
+                else:
+                    outcome, note = result
+                    self._emit("retained_accepted", source, outcome, note, live, paths)
+            except Exception as exc:
+                logging.exception("Manual acceptance failed: %s", retained)
+                self._emit("retained_accept_error", source, str(exc), live, paths)
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _remove_row_from_list(self, path: Path) -> None:
+        if OptimizerGUI._retained_path_busy(self, path):
+            return
         resolved = path.resolve()
         if self.live is not None:
             self.live.dismiss(resolved)
@@ -3048,17 +3541,24 @@ class OptimizerGUI(tk.Frame):
             return
         status = str(self.table.set(iid, "status"))
         self.table.set(iid, "backup", self._backup_status(source, status, check_disk))
+        if OptimizerGUI._cleanup_enabled(self):
+            self._apply_filter_to_path(source)
 
     def _backup_cell_clicked(self, iid: str) -> None:
         source = Path(iid).resolve()
         config = getattr(self, "run_config", None) or load_config(None)
-        backup = _backup_path(source, config.backup_suffix)
+        if OptimizerGUI._retained_path_busy(self, source):
+            return
+        backup = self._existing_backup(source, config)
         if backup.is_file():
             self._delete_backup(backup, source)
         else:
             self._refresh_backup_cell(source, check_disk=True)
 
     def _delete_backup(self, backup: Path, source: Path | None = None) -> None:
+        if any(backup in paths for paths in getattr(self, "retained_action_paths", {}).values()):
+            messagebox.showinfo("File busy", "A retained-output action is using this backup.", parent=self)
+            return
         if not backup.is_file():
             if source is not None:
                 self._refresh_backup_cell(source, check_disk=True)
@@ -3094,11 +3594,11 @@ class OptimizerGUI(tk.Frame):
         if not existing:
             messagebox.showinfo(
                 "No backup files found",
-                "None of the selected completed files currently has a backup.",
+                "None of the selected videos currently has a backup.",
                 parent=self)
             return
         total_size = sum(size for _backup, _source, size in existing)
-        names = "\n".join(f"• {backup.name}" for backup, _source, _size in existing[:12])
+        names = "\n".join(f"• {backup}" for backup, _source, _size in existing[:12])
         if len(existing) > 12:
             names += f"\n• …and {len(existing) - 12} more"
         if not messagebox.askyesno(
@@ -3112,6 +3612,8 @@ class OptimizerGUI(tk.Frame):
         failures: list[tuple[Path, str]] = []
         for backup, source, _size in existing:
             try:
+                if any(backup in paths for paths in getattr(self, "retained_action_paths", {}).values()):
+                    raise OSError("Retained-output action is using this backup")
                 backup.unlink()
             except OSError as exc:
                 failures.append((backup, str(exc)))
@@ -3133,6 +3635,9 @@ class OptimizerGUI(tk.Frame):
     def _revert_to_backup(self, source: Path) -> None:
         """Restore one completed original and discard its encoded output."""
         source = source.resolve()
+        if OptimizerGUI._retained_path_busy(self, source):
+            messagebox.showinfo("File busy", "A retained-output action is using this file.", parent=self)
+            return
         config = getattr(self, "run_config", None) or load_config(None)
         backup = _backup_path(source, config.backup_suffix)
         output = self.completed_outputs.get(source, source)
@@ -3179,6 +3684,8 @@ class OptimizerGUI(tk.Frame):
         self._refresh_encode_all_heading()
         self._refresh_force_all_heading()
         self._log(f"Restored original from backup: {source}")
+        if OptimizerGUI._cleanup_enabled(self):
+            self._apply_filter_to_path(source)
 
     def _set_file_forced(self, iid: str, path: Path, enabled: bool,
                          values: list | None = None,
@@ -3281,7 +3788,9 @@ class OptimizerGUI(tk.Frame):
         self.reanalyze_target = target
         if not progressive:
             self.sample_variants[target] = self.sample_variants.get(target, 0) + 1
-        self.reanalyze_preserve = preserve
+        self.reanalyze_preserve = set()
+        if self.live is not None:
+            self.live.queue_reanalysis(target)
         self.force_encode_paths.discard(target)
         values = list(self.table.item(str(target), "values"))
         values[1] = _force_text(False)
@@ -3314,6 +3823,7 @@ class OptimizerGUI(tk.Frame):
         (target if target is not None else self.events).put(event)
 
     def _log(self, text: str) -> None:
+        write_log("encoder", text)
         self.log.configure(state="normal")
         self.log.insert("end", text + "\n")
         self.log.see("end")
@@ -3340,7 +3850,10 @@ class OptimizerGUI(tk.Frame):
                 or (pending_queue is not None and not pending_queue.empty()))
 
     def start(self) -> None:
-        if self.running:
+        if self.running or getattr(self, "retained_action_paths", {}):
+            return
+        if OptimizerGUI._cleanup_enabled(self):
+            messagebox.showinfo("Cleanup view", "Turn off Cleanup to start encoding.", parent=self)
             return
         if self.can_start_callback and not self.can_start_callback():
             self.start_pending = False
@@ -3428,13 +3941,14 @@ class OptimizerGUI(tk.Frame):
                    if self.reanalyze_target is not None else None)
         if (self.live is None or self.live.root != root
                 or self.live.excluded_root != excluded
-                or self.live.allowed_paths != allowed):
+                ):
             previous = self.live
             if previous is None or previous.root != root:
                 OptimizerGUI._reset_directory_session(self)
             self.live = LiveQueue(
                 root, config.file_ready_seconds, excluded, allowed_paths=allowed,
                 default_selected=config.select_new_files_for_encoding)
+            self.live.cleaning_reserved.update(getattr(self, "external_cleaning_paths", ()))
             self.live.add_manual(list(getattr(self, "dropped_entries", {}).items()))
             if previous is not None and previous.root == root:
                 self.live.completed.update(previous.completed)
@@ -3447,6 +3961,7 @@ class OptimizerGUI(tk.Frame):
                                 self.live.completed.add(protected)
                         except (OSError, ValueError):
                             continue
+        self.live.set_allowed_paths(allowed)
         self.live.ready_seconds = config.file_ready_seconds
         # A media filter is also an encode boundary.  Hidden rows must never
         # remain eligible merely because they were selected before filtering.
@@ -3455,7 +3970,6 @@ class OptimizerGUI(tk.Frame):
             f"Start accepted — {selected_count:,} visible file"
             f"{'s' if selected_count != 1 else ''} selected for encoding.")
         self._sync_queue_order()
-        self.live.completed.update(self.reanalyze_preserve)
         self.reanalyze_preserve.clear()
         self.running = True
         self.start_pending = False
@@ -3573,6 +4087,7 @@ class OptimizerGUI(tk.Frame):
 
     def _run(self, root: Path, output: Path, config, hb: str, probe: str) -> None:
         assert self.live is not None
+        base_config = config
         backup = config.backup_originals
         idle_reported = False
         while not self.stop_event.is_set():
@@ -3580,6 +4095,9 @@ class OptimizerGUI(tk.Frame):
             if waiting:
                 idle_reported = False
                 path = waiting.path
+                mode = self.audio_overrides.get(path, base_config.audio_stream_mode)
+                config = replace(base_config, audio_stream_mode=mode)
+                self._emit("log", f"Audio policy: {path.name} — {mode}")
                 if self.stop_event.is_set():
                     self.live.set_status(path, "Waiting", "Ready")
                     break
@@ -3708,6 +4226,8 @@ class OptimizerGUI(tk.Frame):
                     outcome = encode(result.media, source_root, job_output,
                                      config, backup, hb, probe,
                                      file_cancel, on_progress, self.pause_event, on_pause)
+                    for warning in outcome.warnings:
+                        self._emit("log", f"Subtitle warning: {path.name} — {warning}")
                     previous_retained = self.retained_failed_outputs.pop(
                         path.resolve(), None)
                     if previous_retained is not None and previous_retained != outcome.output:
@@ -3765,6 +4285,9 @@ class OptimizerGUI(tk.Frame):
                         f"retained at {exc.retained_output}")
                 except Exception as exc:
                     logging.exception("GUI encode failed: %s", path)
+                    retained = getattr(exc, "retained_output", None)
+                    if retained is not None and retained.is_file():
+                        self.retained_failed_outputs[path.resolve()] = retained
                     self.encode_failure_details[path.resolve()] = str(exc)
                     self.live.mark_done(path, "Failed", str(exc))
                     self._emit("row", path, "Failed", "—", savings, current_size,
@@ -3817,6 +4340,8 @@ class OptimizerGUI(tk.Frame):
 
     def has_active_work(self) -> bool:
         """Return True only while a file is being sampled or encoded."""
+        if getattr(self, "retained_action_paths", {}):
+            return True
         if (self.encode_active.is_set() or self.pause_event.is_set()
                 or self.current_cancel_event is not None):
             return True
@@ -4010,7 +4535,8 @@ class OptimizerGUI(tk.Frame):
                               and not getattr(self, "inspect_new_files", False)):
                             self.inspection_status_var.set(
                                 _inspection_summary(count, 0, 0, "off"))
-                        if not getattr(self, "inspect_new_files", False):
+                        if (OptimizerGUI._cleanup_enabled(self)
+                                or not getattr(self, "inspect_new_files", False)):
                             self.apply_media_view()
                         self._show_scan_status(
                             self.scan_enabled.is_set(), last_scan=time.strftime(
@@ -4043,6 +4569,46 @@ class OptimizerGUI(tk.Frame):
                     self.inspection_inventory_gate.set()
                     if not self.running:
                         self.inventory_status_var.set(f"Unavailable: {event[1]}")
+                elif event[0] == "retained_accept_review":
+                    _, retained, review, answered, answer = event
+                    try:
+                        answer.append(messagebox.askyesno(
+                            "Accept retained output",
+                            f"{retained.name}\n\n{review}\n\n"
+                            "Replace the original with this output? The original will "
+                            "be preserved as a backup.", parent=self))
+                    finally:
+                        answered.set()
+                elif event[0] == "retained_accept_cancelled":
+                    _, source, action_live, paths = event
+                    if action_live is not None:
+                        action_live.release_retained(paths)
+                    self.retained_action_paths.pop(source, None)
+                elif event[0] == "retained_accept_error":
+                    _, source, error, action_live, paths = event
+                    if action_live is not None:
+                        action_live.release_retained(paths)
+                    self.retained_action_paths.pop(source, None)
+                    self._log(f"Manual acceptance failed: {source.name} — {error}")
+                    messagebox.showerror("Could not accept retained output", error, parent=self)
+                elif event[0] == "retained_accepted":
+                    _, source, outcome, note, action_live, paths = event
+                    self.completed_outputs[source] = outcome.output
+                    self.manual_acceptance_notes[source] = note
+                    self.retained_failed_outputs.pop(source, None)
+                    self.encode_failure_details.pop(source, None)
+                    if action_live is not None:
+                        action_live.mark_done(source, "Completed", note)
+                        if outcome.output != source:
+                            action_live.mark_generated_output(outcome.output)
+                        action_live.release_retained(paths)
+                    self.retained_action_paths.pop(source, None)
+                    self._log(note)
+                    if self.output_ready_callback:
+                        self.output_ready_callback(source, outcome.output)
+                    if self.table.exists(str(source)):
+                        self._emit("row", source, "Completed", "100.0%", "—",
+                                   _size_text(outcome.bytes_before), _size_text(outcome.bytes_after), note)
                 elif event[0] == "row":
                     _, path, status, progress, savings, current_size, projected, decision = event
                     if (status in {"Sampling", "Encoding", "Paused"}
@@ -4123,11 +4689,12 @@ class OptimizerGUI(tk.Frame):
                                          check_disk=status not in {
                                              "Sampling", "Encoding", "Paused"})
                                      if hasattr(self, "_backup_status") else "—")
+                    displayed_path = self.completed_outputs.get(resolved, path)
                     values = ("—" if missing else "☰",
                               "—" if missing else _force_text(resolved_force),
-                              OptimizerGUI._marked_filename(self, path), status,
+                              OptimizerGUI._marked_filename(self, displayed_path), status,
                               progress, savings, current_size, projected, decision, action,
-                              "—" if missing else _encode_text(selected), str(path.parent),
+                              "—" if missing else _encode_text(selected), str(displayed_path.parent),
                               "—" if missing else _clean_text(
                                   resolved in self.clean_paths, self.clean_available),
                               inspection.media_text if inspection else "—",
@@ -4174,9 +4741,13 @@ class OptimizerGUI(tk.Frame):
                         self.inspection_errors.pop(resolved, None)
                     else:
                         self.inspection_errors[resolved] = error
+                        if transient_inspection_error(error):
+                            generation = getattr(self, "inspection_generation", 0)
+                            self.after(30000, lambda path=resolved, gen=generation:
+                                       self._retry_deferred_inspection(path, gen))
                     self._update_row_media(resolved, result, error)
                     filter_one = getattr(self, "_apply_filter_to_path", None)
-                    if callable(filter_one):
+                    if callable(filter_one) and not OptimizerGUI._cleanup_enabled(self):
                         filter_one(resolved, refresh_headings=False)
                     refresh_headings = True
                     inspected = len(self.inspection_results) + len(self.inspection_errors)

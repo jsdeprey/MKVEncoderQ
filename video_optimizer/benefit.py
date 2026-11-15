@@ -5,6 +5,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from .tab_logging import write as write_log, log_directory
 from .config import Config
 from .encoder import build_command
 from .models import Decision, MediaInfo, SampleResult, ScanResult
@@ -92,20 +93,28 @@ def analyze_benefit(media: MediaInfo, config: Config, handbrake_cli: str,
                                      dir=sample_root) as directory:
         for index, start in enumerate(starts[len(retained):], start=len(retained)):
             output = Path(directory) / f"sample-{index}.mkv"
+            command = _sample_command(media, output, config, handbrake_cli,
+                                      start, sample_length)
+            write_log("encoder", f"Sample {index + 1}: {media.path}; start={start:.3f}s; duration={sample_length:.3f}s\nCommand: {command!r}")
             completed = subprocess.run(
-                _sample_command(media, output, config, handbrake_cli,
-                                start, sample_length),
+                command,
                 check=False, stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace",
                 creationflags=helper_creation_flags(),
             )
+            captured = getattr(completed, "stdout", None) or getattr(completed, "stderr", "") or ""
+            for line in captured.splitlines():
+                if line.strip():
+                    write_log("encoder", f"Sample {index + 1} HandBrakeCLI: {line.strip()}")
+            write_log("encoder", f"Sample {index + 1} exited with code {completed.returncode}: {media.path}")
             if completed.returncode or not output.exists():
-                lines = [line.strip() for line in (completed.stderr or "").splitlines()
+                lines = [line.strip() for line in captured.splitlines()
                          if line.strip()]
-                detail = " | ".join(lines[-3:]) if lines else "no error details returned"
+                detail = " | ".join(lines[-30:])[-12000:] if lines else "no error details returned"
                 raise RuntimeError(
-                    f"sample encode {index + 1} failed (exit {completed.returncode}): {detail}"
+                    f"sample encode {index + 1} failed (exit {completed.returncode}): {detail}\n"
+                    f"Encoder log: {log_directory() / 'encoder.log'}"
                 )
             output_size = output.stat().st_size
             total_bytes += output_size

@@ -47,7 +47,7 @@ class RenameTests(unittest.TestCase):
             output = (root / "Old.mkv").resolve()
             renamed = (root / "New.mkv").resolve()
             backup = (root / "Old.mp4.bak").resolve()
-            renamed_backup = (root / "New.mkv.bak").resolve()
+            renamed_backup = (root / "New.mp4.bak").resolve()
             output.write_bytes(b"encoded")
             backup.write_bytes(b"original")
             app = SimpleNamespace(
@@ -70,7 +70,7 @@ class RenameTests(unittest.TestCase):
         self.assertEqual(
             _logical_rename_mapping(
                 {output: renamed}, {source: output}, {source}),
-            {source: renamed},
+            {source: renamed.with_suffix(".mp4")},
         )
 
     def test_backup_companion_collision_stops_whole_rename(self):
@@ -125,7 +125,7 @@ class RenameTests(unittest.TestCase):
 
     def test_default_folder_button_and_dialog_are_explicit(self):
         build_source = inspect.getsource(RenameGUI._build)
-        settings_source = inspect.getsource(RenameGUI.settings)
+        settings_source = inspect.getsource(RenameGUI._default_folder_settings)
         self.assertIn('text="Set Default Folder..."', build_source)
         self.assertIn('title="Set Default Rename Folder"', settings_source)
         self.assertIn('"Default Rename Folder"', settings_source)
@@ -399,6 +399,7 @@ class RenameTests(unittest.TestCase):
             "[ Present ]",
         )
         table = Mock()
+        table.get_children.return_value = ()
         table.exists.side_effect = lambda iid: iid == str(old)
         table.index.return_value = 0
         table.item.side_effect = lambda _iid, field=None: (
@@ -426,7 +427,7 @@ class RenameTests(unittest.TestCase):
             OptimizerGUI.paths_renamed(gui, {old: new})
         self.assertIn(str(new), gui.filter_order)
         self.assertNotIn(str(old), gui.filter_order)
-        gui.apply_media_view.assert_called_once_with()
+        gui.apply_media_view.assert_called_once_with(preserve_order=True)
 
     def test_encoder_rename_migrates_pending_inspection_path(self):
         old = Path("//nas/share/Old.mkv")
@@ -436,6 +437,7 @@ class RenameTests(unittest.TestCase):
             "4.0 GiB", "—", "Awaiting inspection", "—", "☑ Encode",
             str(old.parent), "☐ Clean", "—", "—", "—")
         table = Mock()
+        table.get_children.return_value = ()
         table.exists.side_effect = lambda iid: iid == str(old)
         table.index.return_value = 0
         table.item.side_effect = lambda _iid, field=None: (
@@ -479,7 +481,7 @@ class RenameTests(unittest.TestCase):
         self.assertEqual(migrated_event[1], new)
         self.assertEqual(migrated_event[2].path, new)
         gui.inspection_cache.rename.assert_called_once_with(old, new)
-        gui.apply_media_view.assert_called_once_with()
+        gui.apply_media_view.assert_called_once_with(preserve_order=True)
 
     def test_completed_output_becomes_missing_and_can_return(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -508,13 +510,17 @@ class RenameTests(unittest.TestCase):
             new = (root / "New.mp4").resolve()
             old.write_bytes(b"video")
             coordinator = CleanCoordinator()
-            coordinator.request(old, "Waiting", True,
-                                planned_output=root / "Old.mkv")
+            coordinator.request(old, "Waiting", True)
             old.rename(new)
             coordinator.paths_renamed({old: new})
             self.assertIn(new, coordinator.pending)
-            self.assertEqual(coordinator.pending_display[new], root / "New.mkv")
-            self.assertIn((root / "New.mkv").resolve(), coordinator.visible)
+            self.assertEqual(coordinator.visible_snapshot(), {
+                new: ("Waiting for Encode", "Waiting for New.mp4 to finish encoding"),
+            })
+            output = new.with_suffix(".mkv")
+            output.touch()
+            coordinator.output_ready(new, output)
+            self.assertEqual(coordinator.drain(), [output])
 
     def test_ready_clean_request_follows_renamed_output(self):
         with tempfile.TemporaryDirectory() as directory:

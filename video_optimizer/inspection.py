@@ -118,8 +118,37 @@ def inspection_from_media(media: MediaInfo, modified_ns: int | None = None) -> M
 def inspect_media(path: Path, ffprobe: str, timeout: float = 45.0) -> MediaInspection:
     path = path.resolve()
     stat = path.stat()
-    return inspection_from_media(
-        probe(path, ffprobe, timeout=timeout), stat.st_mtime_ns)
+    media = probe(path, ffprobe, timeout=timeout)
+    after = path.stat()
+    if (stat.st_size, stat.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise RuntimeError("File changed during inspection; it may still be copying")
+    return inspection_from_media(media, stat.st_mtime_ns)
+
+
+def transient_inspection_error(error: Exception) -> bool:
+    text = str(error).lower()
+    return isinstance(error, (PermissionError, TimeoutError)) or any(
+        phrase in text for phrase in ("permission denied", "access is denied",
+            "sharing violation", "used by another process", "resource temporarily unavailable",
+            "file changed during inspection", "moov atom not found", "end of file",
+            "invalid data found", "timed out"))
+
+
+def inspect_with_retry(path, ffprobe, cancel, inspect=inspect_media, on_retry=None):
+    """Bounded, cancellable retries; no directory event is needed to recover."""
+    delays = (2, 4, 8, 16, 30)
+    for attempt in range(len(delays) + 1):
+        if cancel.is_set():
+            return None
+        try:
+            return inspect(path, ffprobe)
+        except Exception as exc:
+            if not transient_inspection_error(exc) or attempt == len(delays):
+                raise
+            if on_retry:
+                on_retry(attempt + 1, delays[attempt], str(exc))
+            if cancel.wait(delays[attempt]):
+                return None
 
 
 def inspection_matches(result: MediaInspection, codec_filter: str,
@@ -193,6 +222,10 @@ class InspectionCache:
         if result.size != stat.st_size or result.modified_ns != stat.st_mtime_ns:
             return None
         return result
+
+    def discard(self, path: Path) -> None:
+        with self._lock:
+            self._items.pop(str(path.resolve()), None)
 
     def put(self, result: MediaInspection, persist: bool = True) -> None:
         with self._lock:

@@ -8,7 +8,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from . import __version__
-from .config import application_directory, load_config
+from .config import load_config
 from .gui import OptimizerGUI
 from .rename_gui import RenameGUI
 from .scanner import VIDEO_EXTENSIONS
@@ -28,47 +28,46 @@ class CleanCoordinator:
 
     def __init__(self) -> None:
         self.pending: set[Path] = set()
-        self.pending_display: dict[Path, Path] = {}
         self.ready: deque[Path] = deque()
         self.visible: dict[Path, tuple[str, str]] = {}
         self._lock = threading.RLock()
 
     def request(self, source: Path, status: str, encoder_running: bool,
-                completed_output: Path | None = None,
-                planned_output: Path | None = None) -> None:
+                completed_output: Path | None = None) -> None:
         source = source.resolve()
         with self._lock:
             if completed_output is not None and completed_output.is_file():
+                self.pending.discard(source)
+                self.visible.pop(source, None)
                 output = completed_output.resolve()
-                self.ready.append(output)
+                if output not in self.ready:
+                    self.ready.append(output)
                 self.visible[output] = ("Queued", "Waiting for Cleaner")
             elif (source.suffix.lower() == ".mkv" and source.is_file()
-                  and (not encoder_running or status in {
-                      "Completed", "Skipped", "Failed", "Cancelled"})):
-                self.ready.append(source)
+                  and (not encoder_running or status not in {
+                      "Sampling", "Encoding", "Paused"})):
+                self.pending.discard(source)
+                if source not in self.ready:
+                    self.ready.append(source)
                 self.visible[source] = ("Queued", "Waiting for Cleaner")
             elif status not in {"Completed", "Skipped", "Failed", "Cancelled"}:
                 # Non-MKV inputs can only be cleaned after encoding creates and
                 # verifies their MKV output. Never send the source or backup.
                 self.pending.add(source)
-                display = (planned_output or source).resolve()
-                self.pending_display[source] = display
-                self.visible[display] = (
+                self.visible[source] = (
                     "Waiting for Encode",
                     f"Waiting for {source.name} to finish encoding",
                 )
             else:
                 self.pending.discard(source)
-                display = self.pending_display.pop(source, source)
-                self.visible.pop(display, None)
+                self.visible.pop(source, None)
 
     def output_ready(self, source: Path, output: Path) -> None:
         source = source.resolve()
         with self._lock:
             if source in self.pending:
                 self.pending.discard(source)
-                display = self.pending_display.pop(source, source)
-                self.visible.pop(display, None)
+                self.visible.pop(source, None)
                 resolved_output = output.resolve()
                 self.ready.append(resolved_output)
                 self.visible[resolved_output] = ("Queued", "Waiting for Cleaner")
@@ -99,13 +98,12 @@ class CleanCoordinator:
         with self._lock:
             if source in self.pending and status in {"Skipped", "Failed", "Cancelled"}:
                 self.pending.discard(source)
-                display = self.pending_display.pop(source, source)
                 if source.suffix.lower() == ".mkv" and source.is_file():
-                    self.visible.pop(display, None)
+                    self.visible.pop(source, None)
                     self.ready.append(source)
                     self.visible[source] = ("Queued", "Waiting for Cleaner")
                 else:
-                    self.visible[display] = (
+                    self.visible[source] = (
                         "Not Cleaned",
                         f"No MKV output — encode {status.lower()}",
                     )
@@ -127,8 +125,10 @@ class CleanCoordinator:
 
     def mark_started(self, paths: list[Path]) -> None:
         with self._lock:
-            for path in paths:
-                self.visible.pop(path.resolve(), None)
+            started = set(paths)
+            self.ready = deque(path for path in self.ready if path not in started)
+            for path in started - self.pending:
+                self.visible.pop(path, None)
 
     def cancel(self, path: Path) -> None:
         """Remove one pending or ready Cleaner request."""
@@ -137,41 +137,21 @@ class CleanCoordinator:
             self.visible.pop(path, None)
             self.ready = deque(item for item in self.ready
                                if item.resolve() != path)
-            for source, display in list(self.pending_display.items()):
-                if source == path or display == path:
-                    self.pending.discard(source)
-                    self.pending_display.pop(source, None)
-                    self.visible.pop(display, None)
+            self.pending.discard(path)
 
     def paths_renamed(self, mapping: dict[Path, Path]) -> None:
         """Migrate pending and ready Cleaner handoffs after a disk rename."""
         resolved = {Path(old): Path(new) for old, new in mapping.items()}
         with self._lock:
-            previous_display = dict(self.pending_display)
-            new_display: dict[Path, Path] = {}
-            display_map: dict[Path, Path] = {}
-            for source, display in previous_display.items():
-                renamed_source = resolved.get(source, source)
-                renamed_display = resolved.get(display)
-                if renamed_display is None:
-                    renamed_display = (display.with_name(
-                        renamed_source.stem + display.suffix)
-                        if renamed_source != source else display)
-                new_display[renamed_source] = renamed_display
-                display_map[display] = renamed_display
             self.pending = {resolved.get(source, source) for source in self.pending}
-            self.pending_display = new_display
             self.ready = deque(resolved.get(item, item)
                                for item in self.ready)
             new_visible: dict[Path, tuple[str, str]] = {}
             for path, state in self.visible.items():
-                destination = display_map.get(path, resolved.get(path, path))
+                destination = resolved.get(path, path)
                 if state[0] == "Waiting for Encode":
-                    source = next((item for item, display in new_display.items()
-                                   if display == destination), None)
-                    detail = (f"Waiting for {source.name} to finish encoding"
-                              if source is not None else state[1])
-                    new_visible[destination] = (state[0], detail)
+                    new_visible[destination] = (
+                        state[0], f"Waiting for {destination.name} to finish encoding")
                 else:
                     new_visible[destination] = state
             self.visible = new_visible
@@ -187,7 +167,6 @@ class CombinedApp(RootWindow):
         self.geometry("1360x850")
         self.minsize(980, 680)
         self.clean_coordinator = CleanCoordinator()
-        self.cleaner_reserved_paths: set[Path] = set()
 
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True)
@@ -208,6 +187,7 @@ class CombinedApp(RootWindow):
             rename_directory_callback=self.send_directory_to_rename,
             inventory_state_callback=self.set_inventory_tabs_locked,
         )
+        self.cleaner_reserved_paths = self.encoder.external_cleaning_paths
         self.encoder.pack(fill="both", expand=True)
         self.cleaner = CleanerGUI(
             cleaner_tab,
@@ -317,6 +297,8 @@ class CombinedApp(RootWindow):
         # Encoder and Rename already exchange canonical queue paths. Resolving
         # one again can block Tk on a busy NAS during initial inventory.
         path = Path(path)
+        if any(path in paths for paths in getattr(self.encoder, "retained_action_paths", {}).values()):
+            return True, "Retained-output action in progress"
         inspection_lock = getattr(self.encoder, "inspection_lock", None)
         if inspection_lock is None:
             inspection_active = getattr(
@@ -370,7 +352,8 @@ class CombinedApp(RootWindow):
             old_backup = Path(backup_source).with_name(
                 Path(backup_source).name + suffix).resolve()
             if old_backup.is_file():
-                companions[old_backup] = new.with_name(new.name + suffix).resolve()
+                new_source = new.with_suffix(Path(backup_source).suffix)
+                companions[old_backup] = new_source.with_name(new_source.name + suffix).resolve()
         return companions
 
     def cleaner_tool_availability_changed(self, available: bool) -> None:
@@ -407,28 +390,18 @@ class CombinedApp(RootWindow):
             iid = str(source)
             if self.encoder.table.exists(iid):
                 status = str(self.encoder.table.set(iid, "status"))
-            self.clean_coordinator.request(
-                source, status, self.encoder.running, output,
-                self._planned_output(source))
+            live = getattr(self.encoder, "live", None)
+            if live is not None and source in live.items:
+                status = live.items[source].status
+            if (output or source) in getattr(self, "cleaner_reserved_paths", ()):
+                self.cleaner._append_activity_log(
+                    f"Already in the current Cleaner run: {(output or source).name}")
+                continue
+            self.clean_coordinator.request(source, status, self.encoder.running, output)
         self.cleaner.sync_external_queue(self.clean_coordinator.visible_snapshot())
         self._dispatch_ready_clean()
         if switch_tab:
             self.notebook.select(self.cleaner_tab)
-
-    def _planned_output(self, source: Path) -> Path:
-        """Return the filename Cleaner will receive if Encoder succeeds."""
-        try:
-            config = getattr(self.encoder, "run_config", None) or load_config(None)
-            root = Path(self.encoder.input_var.get() or config.input_directory)
-            if not root.is_absolute():
-                root = application_directory() / root
-            root = root.resolve()
-            output = Path(config.output_directory) if config.output_directory.strip() else root
-            if not output.is_absolute():
-                output = application_directory() / output
-            return (output.resolve() / source.resolve().relative_to(root)).with_suffix(".mkv")
-        except (OSError, ValueError):
-            return source.with_suffix(".mkv").resolve()
 
     def encoder_output_ready(self, source: Path, output: Path) -> None:
         self.clean_coordinator.output_ready(source, output)
@@ -436,13 +409,21 @@ class CombinedApp(RootWindow):
     def encoder_status_changed(self, source: Path, status: str) -> None:
         self.clean_coordinator.status_changed(source, status)
 
-    def cleaner_finished(self, _results) -> None:
+    def cleaner_finished(self, results) -> None:
+        for result in results:
+            if result.status != "Cleaned":
+                continue
+            path = result.path.resolve()
+            self.encoder.inspection_cache.discard(path)
+            self.encoder.inspection_results.pop(path, None)
+            self.encoder.progressive_samples.pop(path, None)
         if self.encoder.live is not None and self.cleaner_reserved_paths:
             released = self.encoder.live.release_cleaning(
                 list(self.cleaner_reserved_paths))
             for path in released:
                 item = self.encoder.live.items.get(path)
-                if item is not None:
+                if item is not None and item.status in {
+                        "Checking file...", "Waiting to scan", "Waiting", "Queued"}:
                     detail = (
                         "Media inspected — Ready"
                         if path in self.encoder.inspection_results
@@ -454,12 +435,17 @@ class CombinedApp(RootWindow):
                         str(self.encoder.table.set(str(path), "current_size"))
                         if self.encoder.table.exists(str(path)) else "—",
                         "—", detail)
-            self.cleaner_reserved_paths.clear()
+        self.cleaner_reserved_paths.clear()
         self.after(100, self._dispatch_ready_clean)
 
     def cleaner_start_guard(self, paths: list[Path]) -> tuple[bool, str]:
         """Reserve waiting Encoder inputs or reject files already active."""
+        retained_actions = getattr(self.encoder, "retained_action_paths", {})
+        if any(set(paths) & action for action in retained_actions.values()):
+            return False, "A retained-output action is in progress for a file in this run."
         if self.encoder.live is None:
+            self.cleaner_reserved_paths.update(paths)
+            self.clean_coordinator.mark_started(paths)
             return True, ""
         allowed, reserved, reason = self.encoder.live.reserve_for_cleaning(paths)
         if not allowed:
@@ -467,9 +453,12 @@ class CombinedApp(RootWindow):
                 f"{reason.capitalize()}. Wait for Encoder to finish that file "
                 "before cleaning it.")
         self.cleaner_reserved_paths.update(reserved)
+        if hasattr(self, "clean_coordinator"):
+            self.clean_coordinator.mark_started(paths)
         for path in reserved:
             item = self.encoder.live.items.get(path)
-            if item is not None:
+            if item is not None and item.status in {
+                    "Checking file...", "Waiting to scan", "Waiting", "Queued"}:
                 self.encoder._emit(
                     "row", path, item.status, "—", "—",
                     str(self.encoder.table.set(str(path), "current_size"))
@@ -488,7 +477,7 @@ class CombinedApp(RootWindow):
         if self.cleaner is not None and not self.cleaner.running:
             unique = self.clean_coordinator.drain()
             if unique:
-                if self.cleaner.start_paths(unique):
+                if self.cleaner.start_paths(unique, quiet_busy=True):
                     self.clean_coordinator.mark_started(unique)
                     self.cleaner.sync_external_queue(
                         self.clean_coordinator.visible_snapshot())

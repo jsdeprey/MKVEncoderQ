@@ -70,6 +70,7 @@ def probe(path: Path, ffprobe: str = "ffprobe",
             dolby_vision_profile=dovi_profile,
             is_default=bool(raw.get("disposition", {}).get("default", 0)),
             language=str(raw.get("tags", {}).get("language", "")).strip().lower(),
+            title=str(raw.get("tags", {}).get("title", "")),
         ))
     fmt = data.get("format", {})
     return MediaInfo(path=path, duration=_number(fmt.get("duration")),

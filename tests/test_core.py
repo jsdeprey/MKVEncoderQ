@@ -134,7 +134,7 @@ class CoreTests(unittest.TestCase):
         table = Mock()
         table.exists.return_value = False
         gui = SimpleNamespace(
-            events=events, table=table, queued_reanalysis={}, queued_force={},
+            events=events, table=table, completed_outputs={}, queued_reanalysis={}, queued_force={},
             reanalyze_target=None, missing_row_values={}, file_selection={},
             live=SimpleNamespace(items={path: SimpleNamespace(selected=True)
                                        for path in paths}),
@@ -209,7 +209,7 @@ class CoreTests(unittest.TestCase):
         table.item.return_value = values
         item = FileState(path, status="Encoding", selected=True)
         gui = SimpleNamespace(
-            events=events, table=table, queued_reanalysis={}, queued_force={},
+            events=events, table=table, completed_outputs={}, queued_reanalysis={}, queued_force={},
             reanalyze_target=None, missing_row_values={}, file_selection={path: True},
             live=SimpleNamespace(items={path: item}), default_encode_selected=True,
             force_encode_paths=set(), clean_paths=set(), clean_available=True,
@@ -394,9 +394,9 @@ class CoreTests(unittest.TestCase):
     def test_fresh_install_inspects_files_by_default(self):
         self.assertTrue(Config().inspect_new_files)
 
-    def test_fresh_install_defaults_to_first_english_and_dark(self):
+    def test_fresh_install_defaults_to_all_audio_and_dark(self):
         config = Config()
-        self.assertEqual(config.audio_stream_mode, "first_english")
+        self.assertEqual(config.audio_stream_mode, "all")
         self.assertEqual(config.theme, "dark")
         self.assertTrue(config.mark_filenames_with_spaces)
         self.assertTrue(config.mark_filenames_missing_year_or_episode)
@@ -1106,9 +1106,8 @@ class CoreTests(unittest.TestCase):
 
         missing = MediaInfo(output.path, output.duration, output.bit_rate,
                             output.size, output.streams[:-1])
-        with self.assertRaisesRegex(RuntimeError, "expected 5, found 4"):
-            verify(source, missing,
-                   Config(video_bit_depth=8, crop_mode="none"))
+        warnings = verify(source, missing, Config(video_bit_depth=8, crop_mode="none"))
+        self.assertIn("expected 5, found 4", warnings[0])
 
     def test_verify_allows_extra_handbrake_caption_track(self):
         base = media()
@@ -1128,7 +1127,7 @@ class CoreTests(unittest.TestCase):
 
         verify(source, output, Config(video_bit_depth=8, crop_mode="none"))
 
-    def test_verify_rejects_missing_ordinary_subtitle_hidden_by_extra_caption(self):
+    def test_verify_warns_about_missing_ordinary_subtitle_hidden_by_extra_caption(self):
         base = media()
         languages = ("eng", "fra", "por", "spa")
         source_subtitles = tuple(
@@ -1144,9 +1143,8 @@ class CoreTests(unittest.TestCase):
                            base.size, (output_video, *base.audios,
                                        *output_subtitles))
 
-        with self.assertRaisesRegex(RuntimeError, "fra"):
-            verify(source, output,
-                   Config(video_bit_depth=8, crop_mode="none"))
+        warnings = verify(source, output, Config(video_bit_depth=8, crop_mode="none"))
+        self.assertIn("fra (1)", warnings[0])
 
     def test_unknown_config_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
